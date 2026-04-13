@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -274,14 +274,67 @@ export default function DashboardPage() {
     { area: "Basic Connectors", frequency: 2, severity: "low" as const },
   ];
 
-  // Practice consistency — last 4 weeks
-  const practiceWeeks = [
-    { week: "Week 1", sessions: 2, days: ["Mon", "Thu"] },
-    { week: "Week 2", sessions: 3, days: ["Tue", "Wed", "Sat"] },
-    { week: "Week 3", sessions: 1, days: ["Fri"] },
-    { week: "Week 4", sessions: 3, days: ["Mon", "Wed", "Thu"] },
-  ];
-  const allDays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  // Practice consistency — calendar-based with month navigation
+  // Mock data: dates when user practiced (would come from Supabase)
+  const practiceDates = new Set([
+    "2026-04-01", "2026-04-03", "2026-04-04", "2026-04-07", "2026-04-08",
+    "2026-04-10", "2026-04-11",
+    "2026-03-03", "2026-03-05", "2026-03-10", "2026-03-14", "2026-03-18",
+    "2026-03-22", "2026-03-26", "2026-03-30",
+    "2026-02-02", "2026-02-05", "2026-02-09", "2026-02-14", "2026-02-18",
+    "2026-02-22",
+    "2026-01-06", "2026-01-12", "2026-01-19", "2026-01-25",
+  ]);
+
+  const [calMonth, setCalMonth] = useState(() => {
+    const now = new Date();
+    return { year: now.getFullYear(), month: now.getMonth() };
+  });
+
+  const calendarGrid = useMemo(() => {
+    const { year, month } = calMonth;
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const daysInMonth = lastDay.getDate();
+    // 0=Sun, convert to Mon-start: Mon=0..Sun=6
+    const startDow = (firstDay.getDay() + 6) % 7;
+
+    const cells: (number | null)[] = [];
+    // pad before
+    for (let i = 0; i < startDow; i++) cells.push(null);
+    for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+    // pad after to complete last week
+    while (cells.length % 7 !== 0) cells.push(null);
+
+    // split into weeks
+    const weeks: (number | null)[][] = [];
+    for (let i = 0; i < cells.length; i += 7) {
+      weeks.push(cells.slice(i, i + 7));
+    }
+    return { weeks, daysInMonth, year, month };
+  }, [calMonth]);
+
+  const calMonthName = new Date(calMonth.year, calMonth.month).toLocaleString("en-US", { month: "long" });
+
+  const monthOptions = Array.from({ length: 12 }, (_, i) => ({
+    value: i,
+    label: new Date(2026, i).toLocaleString("en-US", { month: "short" }),
+  }));
+
+  const currentYear = new Date().getFullYear();
+  const yearOptions = Array.from({ length: 5 }, (_, i) => currentYear - 4 + i);
+
+  const calSessionCount = useMemo(() => {
+    const { year, month } = calMonth;
+    let count = 0;
+    practiceDates.forEach((d) => {
+      const dt = new Date(d);
+      if (dt.getFullYear() === year && dt.getMonth() === month) count++;
+    });
+    return count;
+  }, [calMonth]);
+
+  const dayLabels = ["M", "T", "W", "T", "F", "S", "S"];
 
   return (
     <div className="min-h-screen bg-[var(--background)] relative noise-overlay">
@@ -681,40 +734,102 @@ export default function DashboardPage() {
 
           {/* Practice Consistency */}
           <motion.div {...fadeUp(0.5)} className="glass-card px-5 py-4">
-            <div className="flex items-center gap-2 mb-4">
-              <CalendarDays size={14} className="text-emerald-400" />
-              <h3 className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Practice Consistency</h3>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <CalendarDays size={14} className="text-emerald-400" />
+                <h3 className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Practice Consistency</h3>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setCalMonth((p) => {
+                    const d = new Date(p.year, p.month - 1);
+                    return { year: d.getFullYear(), month: d.getMonth() };
+                  })}
+                  className="text-slate-400 hover:text-white transition-colors px-1 py-0.5 rounded hover:bg-white/[0.06] text-xs"
+                >
+                  ‹
+                </button>
+                <select
+                  value={calMonth.month}
+                  onChange={(e) => setCalMonth((p) => ({ ...p, month: Number(e.target.value) }))}
+                  className="bg-white/[0.06] border border-white/[0.08] rounded-md text-[11px] text-slate-300 px-1.5 py-0.5 outline-none focus:border-indigo-400/40 appearance-none cursor-pointer"
+                >
+                  {monthOptions.map((m) => (
+                    <option key={m.value} value={m.value} className="bg-slate-900">{m.label}</option>
+                  ))}
+                </select>
+                <select
+                  value={calMonth.year}
+                  onChange={(e) => setCalMonth((p) => ({ ...p, year: Number(e.target.value) }))}
+                  className="bg-white/[0.06] border border-white/[0.08] rounded-md text-[11px] text-slate-300 px-1.5 py-0.5 outline-none focus:border-indigo-400/40 appearance-none cursor-pointer"
+                >
+                  {yearOptions.map((y) => (
+                    <option key={y} value={y} className="bg-slate-900">{y}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => {
+                    const now = new Date();
+                    const cur = new Date(calMonth.year, calMonth.month);
+                    if (cur < new Date(now.getFullYear(), now.getMonth())) {
+                      setCalMonth((p) => {
+                        const d = new Date(p.year, p.month + 1);
+                        return { year: d.getFullYear(), month: d.getMonth() };
+                      });
+                    }
+                  }}
+                  className={`px-1 py-0.5 rounded text-xs transition-colors ${
+                    new Date(calMonth.year, calMonth.month) >= new Date(new Date().getFullYear(), new Date().getMonth())
+                      ? "text-slate-700 cursor-not-allowed"
+                      : "text-slate-400 hover:text-white hover:bg-white/[0.06]"
+                  }`}
+                >
+                  ›
+                </button>
+              </div>
             </div>
-            <div className="space-y-3">
-              {practiceWeeks.map((w, wi) => (
-                <div key={wi}>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <span className="text-[11px] text-slate-400">{w.week}</span>
-                    <span className="text-[10px] text-slate-500">{w.sessions} session{w.sessions !== 1 ? "s" : ""}</span>
-                  </div>
-                  <div className="flex gap-1">
-                    {allDays.map((d) => {
-                      const active = w.days.includes(d);
-                      return (
-                        <div
-                          key={d}
-                          className={`flex-1 h-6 rounded-md flex items-center justify-center text-[8px] font-medium transition-colors ${
-                            active
-                              ? "bg-emerald-500/25 text-emerald-400 border border-emerald-400/20"
-                              : "bg-white/[0.03] text-slate-600 border border-white/[0.04]"
-                          }`}
-                        >
-                          {d[0]}
-                        </div>
-                      );
-                    })}
-                  </div>
+
+            {/* Day headers */}
+            <div className="grid grid-cols-7 gap-1 mb-1">
+              {dayLabels.map((d, i) => (
+                <div key={i} className="text-center text-[9px] font-medium text-slate-600">{d}</div>
+              ))}
+            </div>
+
+            {/* Calendar grid */}
+            <div className="space-y-1">
+              {calendarGrid.weeks.map((week, wi) => (
+                <div key={wi} className="grid grid-cols-7 gap-1">
+                  {week.map((day, di) => {
+                    if (day === null) {
+                      return <div key={di} className="h-7 rounded-md" />;
+                    }
+                    const dateStr = `${calMonth.year}-${String(calMonth.month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+                    const active = practiceDates.has(dateStr);
+                    const isToday =
+                      calMonth.year === new Date().getFullYear() &&
+                      calMonth.month === new Date().getMonth() &&
+                      day === new Date().getDate();
+                    return (
+                      <div
+                        key={di}
+                        className={`h-7 rounded-md flex items-center justify-center text-[10px] font-medium transition-colors ${
+                          active
+                            ? "bg-emerald-500/25 text-emerald-400 border border-emerald-400/20"
+                            : "bg-white/[0.03] text-slate-600 border border-white/[0.04]"
+                        } ${isToday ? "ring-1 ring-indigo-400/50" : ""}`}
+                      >
+                        {day}
+                      </div>
+                    );
+                  })}
                 </div>
               ))}
             </div>
+
             <div className="mt-3 pt-3 border-t border-white/[0.06] flex items-center justify-between">
-              <span className="text-[11px] text-slate-400">Total this month</span>
-              <span className="text-sm font-bold text-white">{practiceWeeks.reduce((a, w) => a + w.sessions, 0)} sessions</span>
+              <span className="text-[11px] text-slate-400">Sessions this month</span>
+              <span className="text-sm font-bold text-white">{calSessionCount} session{calSessionCount !== 1 ? "s" : ""}</span>
             </div>
           </motion.div>
         </div>
