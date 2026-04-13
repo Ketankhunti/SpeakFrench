@@ -93,6 +93,22 @@ body {
   box-shadow: 0 2px 10px rgba(99, 102, 241, 0.3);
 }
 
+/* ─── Thin Scrollbar ─── */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 9999px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* ─── Buttons ─── */
 .btn-secondary {
   background: rgba(255, 255, 255, 0.06);
   backdrop-filter: blur(10px);

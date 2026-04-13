@@ -1,7 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   Mic,
   Play,
@@ -17,12 +18,41 @@ import {
   Sparkles,
   BookOpen,
   ChevronRight,
+  FileText,
+  MessageSquare,
+  X,
 } from "lucide-react";
+import {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  CartesianGrid,
+} from "recharts";
 
 const fadeUp = (delay = 0) => ({
   initial: { opacity: 0, y: 24 },
   animate: { opacity: 1, y: 0, transition: { duration: 0.5, delay, ease: [0.16, 1, 0.3, 1] as const } },
 });
+
+interface SessionData {
+  id: string;
+  date: string;
+  fullDate: string;
+  level: string;
+  partsCompleted: number[];
+  overallScore: number;
+  scores: {
+    pronunciation: number;
+    grammar: number;
+    vocabulary: number;
+    coherence: number;
+  };
+  review: string;
+  transcript: { speaker: string; text: string }[];
+}
 
 export default function DashboardPage() {
   // TODO: Replace with real data from Supabase
@@ -35,19 +65,131 @@ export default function DashboardPage() {
     lastSessionDate: "Apr 10, 2026",
   };
 
-  const recentSessions = [
-    { date: "Apr 10", part: "Part 1 - Presentation", score: 82, level: "B2" },
-    { date: "Apr 8", part: "Part 3 - Opinion", score: 76, level: "B2" },
-    { date: "Apr 6", part: "Part 2 - Conversation", score: 71, level: "B1" },
-    { date: "Apr 4", part: "Part 1 - Presentation", score: 68, level: "B1" },
+  const recentSessions: SessionData[] = [
+    {
+      id: "1",
+      date: "Apr 10",
+      fullDate: "April 10, 2026",
+      level: "B2",
+      partsCompleted: [1, 2, 3],
+      overallScore: 82,
+      scores: { pronunciation: 85, grammar: 78, vocabulary: 80, coherence: 84 },
+      review:
+        "Excellent session! Your pronunciation is notably strong with clear articulation of nasal vowels. Grammar usage shows solid command of subjunctive mood, though some errors with conditional tenses. Vocabulary is varied and appropriate for B2 level. Work on smoother transitions between ideas for better coherence.",
+      transcript: [
+        { speaker: "examiner", text: "Bonjour et bienvenue à l'examen. Pouvez-vous vous présenter s'il vous plaît?" },
+        { speaker: "user", text: "Bonjour, je m'appelle Marie. J'ai vingt-cinq ans et j'habite à Montréal depuis trois ans." },
+        { speaker: "examiner", text: "Très bien. Parlez-moi de votre travail ou de vos études." },
+        { speaker: "user", text: "Je travaille comme développeuse de logiciels dans une entreprise de technologie. C'est un travail que j'aime beaucoup car il me permet d'être créative." },
+      ],
+    },
+    {
+      id: "2",
+      date: "Apr 8",
+      fullDate: "April 8, 2026",
+      level: "B2",
+      partsCompleted: [1, 3],
+      overallScore: 76,
+      scores: { pronunciation: 78, grammar: 72, vocabulary: 74, coherence: 79 },
+      review:
+        "Good performance overall. Pronunciation is clear but work on liaison between words. Grammar shows occasional errors with past tense agreements. Vocabulary is adequate but could benefit from more idiomatic expressions. Coherence is good with logical flow of ideas.",
+      transcript: [
+        { speaker: "examiner", text: "Aujourd'hui, nous allons discuter de l'environnement. Êtes-vous prêt(e)?" },
+        { speaker: "user", text: "Oui, je suis prête. L'environnement est un sujet qui me tient à cœur." },
+        { speaker: "examiner", text: "Que pensez-vous des actions individuelles pour protéger l'environnement?" },
+        { speaker: "user", text: "Je pense que chaque personne peut faire une différence. Par exemple, on peut réduire notre consommation de plastique." },
+      ],
+    },
+    {
+      id: "3",
+      date: "Apr 6",
+      fullDate: "April 6, 2026",
+      level: "B1",
+      partsCompleted: [1, 2],
+      overallScore: 71,
+      scores: { pronunciation: 73, grammar: 68, vocabulary: 69, coherence: 74 },
+      review:
+        "Steady improvement visible. Pronunciation is becoming more natural. Grammar needs work on article agreement and verb conjugation in complex tenses. Vocabulary is growing but still relies on basic structures. Try to elaborate more on your answers for better coherence.",
+      transcript: [
+        { speaker: "examiner", text: "Bonjour. Parlez-moi de votre ville natale." },
+        { speaker: "user", text: "Ma ville natale est petite mais très belle. Elle se trouve dans le sud de la France." },
+        { speaker: "examiner", text: "Qu'est-ce que vous aimez faire pendant votre temps libre?" },
+        { speaker: "user", text: "J'aime lire des livres et faire de la randonnée dans les montagnes près de chez moi." },
+      ],
+    },
+    {
+      id: "4",
+      date: "Apr 4",
+      fullDate: "April 4, 2026",
+      level: "B1",
+      partsCompleted: [1],
+      overallScore: 68,
+      scores: { pronunciation: 70, grammar: 65, vocabulary: 66, coherence: 71 },
+      review:
+        "Good start at B1 level. Focus on improving pronunciation of 'r' sounds and nasal vowels. Grammar foundations are solid but practice more with passé composé and imparfait distinction. Build vocabulary around daily life topics. Keep practicing!",
+      transcript: [
+        { speaker: "examiner", text: "Bonjour, comment allez-vous aujourd'hui?" },
+        { speaker: "user", text: "Bonjour, je vais bien merci. Et vous?" },
+        { speaker: "examiner", text: "Bien merci. Pouvez-vous me parler de votre famille?" },
+        { speaker: "user", text: "J'ai une petite famille. Mon père est médecin et ma mère est professeure à l'université." },
+      ],
+    },
+    {
+      id: "5",
+      date: "Mar 30",
+      fullDate: "March 30, 2026",
+      level: "B1",
+      partsCompleted: [1, 2, 3],
+      overallScore: 64,
+      scores: { pronunciation: 66, grammar: 60, vocabulary: 63, coherence: 67 },
+      review:
+        "Solid effort covering all three parts. Pronunciation needs more attention to vowel sounds. Grammar errors are frequent but understandable. Expand vocabulary beyond basic connectors. Good attempt at structuring longer responses in Part 3.",
+      transcript: [
+        { speaker: "examiner", text: "Bonjour, parlez-moi de vos loisirs préférés." },
+        { speaker: "user", text: "J'aime beaucoup le cinéma et la musique. Je vais souvent au cinéma le weekend." },
+        { speaker: "examiner", text: "Quel type de films préférez-vous?" },
+        { speaker: "user", text: "Je préfère les films dramatiques et les documentaires. Ils sont très intéressants." },
+      ],
+    },
+    {
+      id: "6",
+      date: "Mar 26",
+      fullDate: "March 26, 2026",
+      level: "A2",
+      partsCompleted: [1],
+      overallScore: 58,
+      scores: { pronunciation: 60, grammar: 55, vocabulary: 57, coherence: 60 },
+      review:
+        "Good foundation at A2 level. Focus on basic sentence structures and high-frequency vocabulary. Pronunciation of French 'r' and nasal vowels needs practice. Keep up the daily practice sessions to build confidence.",
+      transcript: [
+        { speaker: "examiner", text: "Bonjour! Comment vous appelez-vous?" },
+        { speaker: "user", text: "Je m'appelle Pierre. J'ai trente ans." },
+        { speaker: "examiner", text: "Où habitez-vous?" },
+        { speaker: "user", text: "J'habite à Toronto, au Canada." },
+      ],
+    },
   ];
 
+  const [selectedSessionId, setSelectedSessionId] = useState<string>(recentSessions[0].id);
+  const [modalContent, setModalContent] = useState<{
+    type: "transcript" | "review";
+    session: SessionData;
+  } | null>(null);
+
+  const selectedSession = recentSessions.find((s) => s.id === selectedSessionId) ?? recentSessions[0];
+
   const scoreBreakdown = [
-    { label: "Pronunciation", value: 78, color: "from-blue-500 to-cyan-400" },
-    { label: "Grammar", value: 72, color: "from-emerald-500 to-teal-400" },
-    { label: "Vocabulary", value: 69, color: "from-amber-500 to-orange-400" },
-    { label: "Coherence", value: 76, color: "from-violet-500 to-purple-400" },
+    { label: "Pronunciation", value: selectedSession.scores.pronunciation, color: "from-blue-500 to-cyan-400" },
+    { label: "Grammar", value: selectedSession.scores.grammar, color: "from-emerald-500 to-teal-400" },
+    { label: "Vocabulary", value: selectedSession.scores.vocabulary, color: "from-amber-500 to-orange-400" },
+    { label: "Coherence", value: selectedSession.scores.coherence, color: "from-violet-500 to-purple-400" },
   ];
+
+  // Chart data — oldest first
+  const chartData = [...recentSessions].reverse().map((s) => ({
+    date: s.date,
+    score: s.overallScore,
+  }));
 
   return (
     <div className="min-h-screen bg-[var(--background)] relative noise-overlay">
@@ -134,84 +276,196 @@ export default function DashboardPage() {
           ))}
         </motion.div>
 
-        <div className="grid gap-6 lg:grid-cols-3">
-          {/* Score Breakdown */}
-          <motion.div {...fadeUp(0.15)} className="glass-card p-6 lg:col-span-1">
-            <div className="flex items-center gap-2 mb-5">
-              <BarChart3 size={16} className="text-indigo-400" />
-              <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-500">Score Breakdown</h3>
-            </div>
-
-            <div className="space-y-4">
-              {scoreBreakdown.map((item, i) => (
-                <div key={i}>
-                  <div className="mb-1.5 flex items-center justify-between text-sm">
-                    <span className="text-slate-400">{item.label}</span>
-                    <span className="font-semibold text-white">{item.value}%</span>
-                  </div>
-                  <div className="h-2.5 overflow-hidden rounded-full bg-white/[0.06]">
-                    <motion.div
-                      initial={{ width: 0 }}
-                      animate={{ width: `${item.value}%` }}
-                      transition={{ duration: 1, delay: 0.3 + i * 0.15, ease: [0.16, 1, 0.3, 1] as const }}
-                      className={`h-full rounded-full bg-gradient-to-r ${item.color}`}
-                    />
-                  </div>
+        {/* Sessions + Score Breakdown + Graph */}
+        <div className="grid gap-6 lg:grid-cols-5 items-start">
+          {/* Left Column: Score Breakdown + Progress Graph */}
+          <div className="lg:col-span-2 flex flex-col gap-6">
+            {/* Score Breakdown */}
+            <motion.div {...fadeUp(0.15)} className="glass-card px-4 py-3.5">
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-1.5">
+                  <BarChart3 size={12} className="text-indigo-400" />
+                  <h3 className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Score Breakdown</h3>
                 </div>
-              ))}
-            </div>
-
-            <div className="mt-5 pt-4 border-t border-white/[0.06]">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-slate-400">Overall Average</span>
-                <span className="text-2xl font-bold text-white">{stats.avgScore}<span className="text-sm text-slate-500">/100</span></span>
+                <span className="text-[10px] text-slate-500">{selectedSession.fullDate} · Level {selectedSession.level}</span>
               </div>
-            </div>
-          </motion.div>
 
-          {/* Recent Sessions */}
-          <motion.div {...fadeUp(0.2)} className="glass-card p-6 lg:col-span-2">
-            <div className="flex items-center justify-between mb-5">
-              <div className="flex items-center gap-2">
-                <Clock3 size={16} className="text-indigo-400" />
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-500">Recent Sessions</h3>
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={selectedSession.id}
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{ duration: 0.2 }}
+                  className="space-y-2 mt-2.5"
+                >
+                  {scoreBreakdown.map((item, i) => (
+                    <div key={i} className="flex items-center gap-3">
+                      <span className="text-[11px] text-slate-400 w-24 shrink-0">{item.label}</span>
+                      <div className="flex-1 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+                        <motion.div
+                          initial={{ width: 0 }}
+                          animate={{ width: `${item.value}%` }}
+                          transition={{ duration: 0.8, delay: i * 0.08, ease: [0.16, 1, 0.3, 1] as const }}
+                          className={`h-full rounded-full bg-gradient-to-r ${item.color}`}
+                        />
+                      </div>
+                      <span className="text-[11px] font-semibold text-white w-8 text-right">{item.value}%</span>
+                    </div>
+                  ))}
+                </motion.div>
+              </AnimatePresence>
+
+              <div className="mt-2.5 pt-2 border-t border-white/[0.06] flex items-center justify-between">
+                <span className="text-[11px] text-slate-400">Overall</span>
+                <span className="text-lg font-bold text-white">
+                  {selectedSession.overallScore}<span className="text-[10px] text-slate-500">/100</span>
+                </span>
               </div>
+            </motion.div>
+
+            {/* Progress Over Time */}
+            <motion.div {...fadeUp(0.25)} className="glass-card p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <TrendingUp size={14} className="text-indigo-400" />
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Progress Over Time</h3>
+              </div>
+              <div className="h-52">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={chartData} margin={{ top: 5, right: 15, bottom: 5, left: -10 }}>
+                      <defs>
+                        <linearGradient id="lineGradient" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%" stopColor="#6366f1" />
+                          <stop offset="100%" stopColor="#a78bfa" />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                      <XAxis
+                        dataKey="date"
+                        stroke="#64748b"
+                        fontSize={11}
+                        tickLine={false}
+                        axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
+                      />
+                      <YAxis
+                        stroke="#64748b"
+                        fontSize={11}
+                        tickLine={false}
+                        axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
+                        domain={[0, 100]}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          background: "rgba(15, 23, 42, 0.95)",
+                          border: "1px solid rgba(255,255,255,0.1)",
+                          borderRadius: "0.75rem",
+                          boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
+                        }}
+                        labelStyle={{ color: "#94a3b8", fontSize: 11 }}
+                        itemStyle={{ color: "#e2e8f0", fontSize: 12 }}
+                        formatter={(value: number) => [`${value}/100`, "Score"]}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="score"
+                        stroke="url(#lineGradient)"
+                        strokeWidth={2.5}
+                        dot={{ fill: "#818cf8", stroke: "#6366f1", strokeWidth: 2, r: 4 }}
+                        activeDot={{ fill: "#a78bfa", stroke: "#6366f1", strokeWidth: 2, r: 6 }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+              </div>
+            </motion.div>
+          </div>
+
+          {/* Right Column: Recent Sessions (scrollable) */}
+          <motion.div {...fadeUp(0.2)} className="glass-card p-5 lg:col-span-3">
+            <div className="flex items-center gap-2 mb-4">
+              <Clock3 size={14} className="text-indigo-400" />
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Recent Sessions</h3>
             </div>
 
-            <div className="space-y-3">
-              {recentSessions.map((session, i) => {
+            <div className="overflow-y-auto max-h-[420px] pr-1 space-y-2 scrollbar-thin">
+              {recentSessions.map((session) => {
+                const isSelected = session.id === selectedSessionId;
                 const scoreColor =
-                  session.score >= 80
+                  session.overallScore >= 80
                     ? "text-emerald-400 bg-emerald-500/10 border-emerald-400/20"
-                    : session.score >= 65
+                    : session.overallScore >= 65
                       ? "text-amber-400 bg-amber-500/10 border-amber-400/20"
                       : "text-red-400 bg-red-500/10 border-red-400/20";
 
                 return (
-                  <div key={i} className="flex items-center justify-between rounded-xl bg-white/[0.03] border border-white/[0.05] px-4 py-3 hover:bg-white/[0.05] transition-colors">
-                    <div className="flex items-center gap-4">
-                      <span className="text-xs text-slate-500 font-medium w-14">{session.date}</span>
-                      <div>
-                        <p className="text-sm font-medium text-slate-200">{session.part}</p>
-                        <p className="text-xs text-slate-500">Level {session.level}</p>
+                  <div
+                    key={session.id}
+                    onClick={() => setSelectedSessionId(session.id)}
+                    className={`cursor-pointer rounded-lg border px-3 py-2.5 transition-all duration-200 ${
+                      isSelected
+                        ? "bg-indigo-500/10 border-indigo-400/30 shadow-lg shadow-indigo-500/5"
+                        : "bg-white/[0.03] border-white/[0.05] hover:bg-white/[0.05]"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
+                        <span className="text-[11px] text-slate-500 font-medium w-14 shrink-0">{session.date}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 mb-1 flex-wrap">
+                            <span className="text-[11px] text-slate-500 font-medium">Level {session.level}</span>
+                            <span className="text-slate-600 text-[10px]">·</span>
+                            <div className="flex gap-1 flex-wrap">
+                              {session.partsCompleted.map((part) => (
+                                <span
+                                  key={part}
+                                  className="text-[9px] font-semibold px-1.5 py-px rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-400/20"
+                                >
+                                  Part {part}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setModalContent({ type: "transcript", session });
+                              }}
+                              className="text-[10px] font-medium text-slate-400 hover:text-indigo-400 transition-colors flex items-center gap-0.5"
+                            >
+                              <FileText size={10} />
+                              Transcript
+                            </button>
+                            <span className="text-slate-700 text-[10px]">|</span>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setModalContent({ type: "review", session });
+                              }}
+                              className="text-[10px] font-medium text-slate-400 hover:text-violet-400 transition-colors flex items-center gap-0.5"
+                            >
+                              <MessageSquare size={10} />
+                              Review
+                            </button>
+                          </div>
+                        </div>
                       </div>
+                      <span className={`rounded-md border px-2.5 py-0.5 text-xs font-bold shrink-0 ${scoreColor}`}>
+                        {session.overallScore}
+                      </span>
                     </div>
-                    <span className={`rounded-lg border px-3 py-1 text-sm font-bold ${scoreColor}`}>
-                      {session.score}
-                    </span>
                   </div>
                 );
               })}
             </div>
 
-            <div className="mt-4 pt-4 border-t border-white/[0.06] text-center">
-              <p className="text-sm text-slate-500">Session history will populate as you practice more.</p>
+            <div className="mt-3 pt-3 border-t border-white/[0.06] text-center">
+              <p className="text-xs text-slate-500">Click a session to view its score breakdown.</p>
             </div>
           </motion.div>
         </div>
 
         {/* Buy More Sessions CTA */}
-        <motion.div {...fadeUp(0.25)} className="mt-8 glass-card p-8 flex flex-col md:flex-row items-center justify-between gap-6 relative overflow-hidden">
+        <motion.div {...fadeUp(0.3)} className="mt-8 glass-card p-8 flex flex-col md:flex-row items-center justify-between gap-6 relative overflow-hidden">
           <div className="absolute inset-0 bg-gradient-to-r from-indigo-600/5 via-violet-600/5 to-transparent pointer-events-none" />
           <div className="relative">
             <h3 className="text-xl font-bold text-white mb-1">Need more sessions?</h3>
@@ -224,6 +478,71 @@ export default function DashboardPage() {
           </Link>
         </motion.div>
       </div>
+
+      {/* Transcript / Review Modal */}
+      <AnimatePresence>
+        {modalContent && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm"
+            onClick={() => setModalContent(null)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              transition={{ duration: 0.2 }}
+              onClick={(e) => e.stopPropagation()}
+              className="glass-card p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto border border-white/[0.1]"
+            >
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-white">
+                  {modalContent.type === "transcript" ? "Session Transcript" : "AI Review"}
+                </h3>
+                <button
+                  onClick={() => setModalContent(null)}
+                  className="text-slate-400 hover:text-white transition-colors p-1 rounded-lg hover:bg-white/[0.06]"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <p className="text-xs text-slate-500 mb-5">
+                {modalContent.session.fullDate} · Level {modalContent.session.level} ·
+                Parts {modalContent.session.partsCompleted.join(", ")}
+              </p>
+
+              {modalContent.type === "transcript" ? (
+                <div className="space-y-3">
+                  {modalContent.session.transcript.map((entry, i) => (
+                    <div
+                      key={i}
+                      className={`rounded-xl px-4 py-3 ${
+                        entry.speaker === "examiner"
+                          ? "bg-indigo-500/10 border border-indigo-400/15"
+                          : "bg-white/[0.04] border border-white/[0.06]"
+                      }`}
+                    >
+                      <p className="text-[10px] uppercase tracking-wider font-semibold mb-1 text-slate-500">
+                        {entry.speaker === "examiner" ? "Examiner" : "You"}
+                      </p>
+                      <p className="text-sm text-slate-300 leading-relaxed">{entry.text}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="bg-violet-500/10 border border-violet-400/15 rounded-xl px-5 py-4">
+                  <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-line">
+                    {modalContent.session.review}
+                  </p>
+                </div>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
