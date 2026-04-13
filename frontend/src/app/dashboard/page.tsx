@@ -21,6 +21,10 @@ import {
   FileText,
   MessageSquare,
   X,
+  AlertTriangle,
+  Crosshair,
+  Gauge,
+  CalendarDays,
 } from "lucide-react";
 import {
   LineChart,
@@ -30,6 +34,14 @@ import {
   Tooltip,
   ResponsiveContainer,
   CartesianGrid,
+  RadarChart,
+  PolarGrid,
+  PolarAngleAxis,
+  PolarRadiusAxis,
+  Radar,
+  Legend,
+  BarChart,
+  Bar,
 } from "recharts";
 
 const fadeUp = (delay = 0) => ({
@@ -185,11 +197,91 @@ export default function DashboardPage() {
     { label: "Coherence", value: selectedSession.scores.coherence, color: "from-violet-500 to-purple-400" },
   ];
 
-  // Chart data — oldest first
+  // Chart data — oldest first, with individual skill lines
   const chartData = [...recentSessions].reverse().map((s) => ({
     date: s.date,
     score: s.overallScore,
+    pronunciation: s.scores.pronunciation,
+    grammar: s.scores.grammar,
+    vocabulary: s.scores.vocabulary,
+    coherence: s.scores.coherence,
   }));
+
+  // ── Computed Analytics ──
+
+  // Average scores across all sessions
+  const avgScores = {
+    pronunciation: Math.round(recentSessions.reduce((a, s) => a + s.scores.pronunciation, 0) / recentSessions.length),
+    grammar: Math.round(recentSessions.reduce((a, s) => a + s.scores.grammar, 0) / recentSessions.length),
+    vocabulary: Math.round(recentSessions.reduce((a, s) => a + s.scores.vocabulary, 0) / recentSessions.length),
+    coherence: Math.round(recentSessions.reduce((a, s) => a + s.scores.coherence, 0) / recentSessions.length),
+  };
+
+  // Weakest area
+  const skillEntries = Object.entries(avgScores) as [string, number][];
+  const weakest = skillEntries.reduce((min, e) => (e[1] < min[1] ? e : min));
+  const weakestLabel = weakest[0].charAt(0).toUpperCase() + weakest[0].slice(1);
+  const weakestTips: Record<string, string> = {
+    pronunciation: "Focus on nasal vowels (an, en, on), the French 'r', and liaison between words.",
+    grammar: "Practice passé composé vs imparfait, subjunctive mood, and article agreements.",
+    vocabulary: "Expand with idiomatic expressions, connectors (cependant, néanmoins), and topic-specific words.",
+    coherence: "Structure answers with introduction → development → conclusion. Use transition phrases.",
+  };
+
+  // Part performance — average score per exam part
+  const partScores: Record<number, { total: number; count: number }> = {};
+  recentSessions.forEach((s) => {
+    s.partsCompleted.forEach((p) => {
+      if (!partScores[p]) partScores[p] = { total: 0, count: 0 };
+      partScores[p].total += s.overallScore;
+      partScores[p].count++;
+    });
+  });
+  const partData = [1, 2, 3].map((p) => ({
+    part: `Part ${p}`,
+    score: partScores[p] ? Math.round(partScores[p].total / partScores[p].count) : 0,
+    sessions: partScores[p]?.count ?? 0,
+  }));
+
+  // Radar data for part performance
+  const radarData = [
+    { skill: "Pronunciation", value: avgScores.pronunciation },
+    { skill: "Grammar", value: avgScores.grammar },
+    { skill: "Vocabulary", value: avgScores.vocabulary },
+    { skill: "Coherence", value: avgScores.coherence },
+  ];
+
+  // Level readiness — based on recent 3 sessions avg
+  const recent3 = recentSessions.slice(0, 3);
+  const recent3Avg = Math.round(recent3.reduce((a, s) => a + s.overallScore, 0) / recent3.length);
+  const levelThresholds = [
+    { level: "A2", min: 40, color: "from-slate-400 to-slate-500" },
+    { level: "B1", min: 55, color: "from-emerald-500 to-teal-400" },
+    { level: "B2", min: 70, color: "from-blue-500 to-cyan-400" },
+    { level: "C1", min: 85, color: "from-violet-500 to-purple-400" },
+  ];
+  const levelReadiness = levelThresholds.map((l) => ({
+    ...l,
+    readiness: Math.min(100, Math.round((recent3Avg / l.min) * 100)),
+  }));
+
+  // Common mistakes (extracted from mock review keywords)
+  const commonMistakes = [
+    { area: "Conditional Tenses", frequency: 4, severity: "high" as const },
+    { area: "Article Agreement", frequency: 3, severity: "high" as const },
+    { area: "Nasal Vowels", frequency: 3, severity: "medium" as const },
+    { area: "Liaison Errors", frequency: 2, severity: "medium" as const },
+    { area: "Basic Connectors", frequency: 2, severity: "low" as const },
+  ];
+
+  // Practice consistency — last 4 weeks
+  const practiceWeeks = [
+    { week: "Week 1", sessions: 2, days: ["Mon", "Thu"] },
+    { week: "Week 2", sessions: 3, days: ["Tue", "Wed", "Sat"] },
+    { week: "Week 3", sessions: 1, days: ["Fri"] },
+    { week: "Week 4", sessions: 3, days: ["Mon", "Wed", "Thu"] },
+  ];
+  const allDays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
   return (
     <div className="min-h-screen bg-[var(--background)] relative noise-overlay">
@@ -324,21 +416,15 @@ export default function DashboardPage() {
               </div>
             </motion.div>
 
-            {/* Progress Over Time */}
+            {/* Skill Trends Over Time */}
             <motion.div {...fadeUp(0.25)} className="glass-card p-5">
               <div className="flex items-center gap-2 mb-4">
                 <TrendingUp size={14} className="text-indigo-400" />
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Progress Over Time</h3>
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Skill Trends</h3>
               </div>
               <div className="h-52">
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={chartData} margin={{ top: 5, right: 15, bottom: 5, left: -10 }}>
-                      <defs>
-                        <linearGradient id="lineGradient" x1="0" y1="0" x2="1" y2="0">
-                          <stop offset="0%" stopColor="#6366f1" />
-                          <stop offset="100%" stopColor="#a78bfa" />
-                        </linearGradient>
-                      </defs>
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                       <XAxis
                         dataKey="date"
@@ -360,19 +446,19 @@ export default function DashboardPage() {
                           border: "1px solid rgba(255,255,255,0.1)",
                           borderRadius: "0.75rem",
                           boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
+                          fontSize: 11,
                         }}
                         labelStyle={{ color: "#94a3b8", fontSize: 11 }}
-                        itemStyle={{ color: "#e2e8f0", fontSize: 12 }}
-                        formatter={(value: number) => [`${value}/100`, "Score"]}
                       />
-                      <Line
-                        type="monotone"
-                        dataKey="score"
-                        stroke="url(#lineGradient)"
-                        strokeWidth={2.5}
-                        dot={{ fill: "#818cf8", stroke: "#6366f1", strokeWidth: 2, r: 4 }}
-                        activeDot={{ fill: "#a78bfa", stroke: "#6366f1", strokeWidth: 2, r: 6 }}
+                      <Legend
+                        iconSize={8}
+                        wrapperStyle={{ fontSize: 10, color: "#94a3b8" }}
                       />
+                      <Line type="monotone" dataKey="score" name="Overall" stroke="#818cf8" strokeWidth={2.5} dot={{ r: 3 }} />
+                      <Line type="monotone" dataKey="pronunciation" name="Pronunc." stroke="#38bdf8" strokeWidth={1.5} dot={false} strokeDasharray="4 2" />
+                      <Line type="monotone" dataKey="grammar" name="Grammar" stroke="#34d399" strokeWidth={1.5} dot={false} strokeDasharray="4 2" />
+                      <Line type="monotone" dataKey="vocabulary" name="Vocab." stroke="#fb923c" strokeWidth={1.5} dot={false} strokeDasharray="4 2" />
+                      <Line type="monotone" dataKey="coherence" name="Coherence" stroke="#c084fc" strokeWidth={1.5} dot={false} strokeDasharray="4 2" />
                     </LineChart>
                   </ResponsiveContainer>
               </div>
@@ -460,6 +546,175 @@ export default function DashboardPage() {
 
             <div className="mt-3 pt-3 border-t border-white/[0.06] text-center">
               <p className="text-xs text-slate-500">Click a session to view its score breakdown.</p>
+            </div>
+          </motion.div>
+        </div>
+
+        {/* ── Analytics Section ── */}
+        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3 mt-8">
+
+          {/* Level Readiness */}
+          <motion.div {...fadeUp(0.3)} className="glass-card px-5 py-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Gauge size={14} className="text-indigo-400" />
+              <h3 className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Level Readiness</h3>
+            </div>
+            <p className="text-[10px] text-slate-500 mb-3">Based on your last 3 sessions (avg: {recent3Avg})</p>
+            <div className="space-y-2.5">
+              {levelReadiness.map((l) => (
+                <div key={l.level} className="flex items-center gap-3">
+                  <span className="text-[11px] font-bold text-white w-6">{l.level}</span>
+                  <div className="flex-1 h-2 overflow-hidden rounded-full bg-white/[0.06]">
+                    <motion.div
+                      initial={{ width: 0 }}
+                      animate={{ width: `${Math.min(l.readiness, 100)}%` }}
+                      transition={{ duration: 1, ease: [0.16, 1, 0.3, 1] as const }}
+                      className={`h-full rounded-full bg-gradient-to-r ${l.color}`}
+                    />
+                  </div>
+                  <span className={`text-[11px] font-semibold w-10 text-right ${l.readiness >= 100 ? "text-emerald-400" : "text-slate-400"}`}>
+                    {l.readiness >= 100 ? "✓ Ready" : `${l.readiness}%`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+
+          {/* Weakest Area + Focus */}
+          <motion.div {...fadeUp(0.35)} className="glass-card px-5 py-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Crosshair size={14} className="text-amber-400" />
+              <h3 className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Focus Area</h3>
+            </div>
+            <div className="flex items-center gap-3 mb-3">
+              <div className="rounded-xl bg-amber-500/15 border border-amber-400/20 px-3 py-1.5">
+                <span className="text-sm font-bold text-amber-400">{weakestLabel}</span>
+              </div>
+              <span className="text-[11px] text-slate-500">avg {weakest[1]}% — your lowest skill</span>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed mb-4">{weakestTips[weakest[0]]}</p>
+
+            {/* Skill radar mini */}
+            <div className="h-40 -mx-2">
+              <ResponsiveContainer width="100%" height="100%">
+                <RadarChart data={radarData} outerRadius="70%">
+                  <PolarGrid stroke="rgba(255,255,255,0.08)" />
+                  <PolarAngleAxis dataKey="skill" tick={{ fontSize: 10, fill: "#94a3b8" }} />
+                  <PolarRadiusAxis tick={false} axisLine={false} domain={[0, 100]} />
+                  <Radar dataKey="value" stroke="#818cf8" fill="#6366f1" fillOpacity={0.2} strokeWidth={2} />
+                </RadarChart>
+              </ResponsiveContainer>
+            </div>
+          </motion.div>
+
+          {/* Common Mistakes */}
+          <motion.div {...fadeUp(0.4)} className="glass-card px-5 py-4">
+            <div className="flex items-center gap-2 mb-3">
+              <AlertTriangle size={14} className="text-rose-400" />
+              <h3 className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Common Mistakes</h3>
+            </div>
+            <div className="space-y-2">
+              {commonMistakes.map((m, i) => {
+                const sevColor =
+                  m.severity === "high"
+                    ? "text-rose-400 bg-rose-500/10 border-rose-400/20"
+                    : m.severity === "medium"
+                      ? "text-amber-400 bg-amber-500/10 border-amber-400/20"
+                      : "text-slate-400 bg-white/[0.04] border-white/[0.08]";
+                return (
+                  <div key={i} className="flex items-center justify-between rounded-lg bg-white/[0.03] border border-white/[0.05] px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-slate-300">{m.area}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-slate-500">{m.frequency}×</span>
+                      <span className={`text-[9px] font-semibold px-1.5 py-px rounded-full border ${sevColor}`}>
+                        {m.severity}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </motion.div>
+        </div>
+
+        {/* Part Performance + Practice Consistency */}
+        <div className="grid gap-6 md:grid-cols-2 mt-6">
+          {/* Part Performance */}
+          <motion.div {...fadeUp(0.45)} className="glass-card px-5 py-4">
+            <div className="flex items-center gap-2 mb-4">
+              <BarChart3 size={14} className="text-indigo-400" />
+              <h3 className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Performance by Exam Part</h3>
+            </div>
+            <div className="h-44">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={partData} margin={{ top: 5, right: 10, bottom: 5, left: -15 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+                  <XAxis dataKey="part" stroke="#64748b" fontSize={11} tickLine={false} />
+                  <YAxis stroke="#64748b" fontSize={11} tickLine={false} domain={[0, 100]} />
+                  <Tooltip
+                    contentStyle={{
+                      background: "rgba(15, 23, 42, 0.95)",
+                      border: "1px solid rgba(255,255,255,0.1)",
+                      borderRadius: "0.75rem",
+                      fontSize: 11,
+                    }}
+                    formatter={(value: number, name: string) => {
+                      if (name === "score") return [`${value}/100`, "Avg Score"];
+                      return [`${value}`, "Sessions"];
+                    }}
+                  />
+                  <Bar dataKey="score" fill="#818cf8" radius={[6, 6, 0, 0]} barSize={32} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="flex justify-center gap-6 mt-2">
+              {partData.map((p) => (
+                <div key={p.part} className="text-center">
+                  <p className="text-[11px] text-slate-500">{p.part}</p>
+                  <p className="text-[10px] text-slate-600">{p.sessions} session{p.sessions !== 1 ? "s" : ""}</p>
+                </div>
+              ))}
+            </div>
+          </motion.div>
+
+          {/* Practice Consistency */}
+          <motion.div {...fadeUp(0.5)} className="glass-card px-5 py-4">
+            <div className="flex items-center gap-2 mb-4">
+              <CalendarDays size={14} className="text-emerald-400" />
+              <h3 className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Practice Consistency</h3>
+            </div>
+            <div className="space-y-3">
+              {practiceWeeks.map((w, wi) => (
+                <div key={wi}>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[11px] text-slate-400">{w.week}</span>
+                    <span className="text-[10px] text-slate-500">{w.sessions} session{w.sessions !== 1 ? "s" : ""}</span>
+                  </div>
+                  <div className="flex gap-1">
+                    {allDays.map((d) => {
+                      const active = w.days.includes(d);
+                      return (
+                        <div
+                          key={d}
+                          className={`flex-1 h-6 rounded-md flex items-center justify-center text-[8px] font-medium transition-colors ${
+                            active
+                              ? "bg-emerald-500/25 text-emerald-400 border border-emerald-400/20"
+                              : "bg-white/[0.03] text-slate-600 border border-white/[0.04]"
+                          }`}
+                        >
+                          {d[0]}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 pt-3 border-t border-white/[0.06] flex items-center justify-between">
+              <span className="text-[11px] text-slate-400">Total this month</span>
+              <span className="text-sm font-bold text-white">{practiceWeeks.reduce((a, w) => a + w.sessions, 0)} sessions</span>
             </div>
           </motion.div>
         </div>
