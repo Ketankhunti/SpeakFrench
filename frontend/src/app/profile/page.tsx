@@ -228,7 +228,7 @@ export default function ProfilePage() {
     setPasswordStatus(null);
 
     const { error: resetError } = await supabase.auth.resetPasswordForEmail(profile.email, {
-      redirectTo: `${window.location.origin}/profile`,
+      redirectTo: `${window.location.origin}/auth/reset-password`,
     });
 
     if (resetError) {

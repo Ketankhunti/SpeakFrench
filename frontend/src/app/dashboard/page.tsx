@@ -153,7 +153,7 @@ export default function DashboardPage() {
     }
   }, [recentSessions, selectedSessionId]);
 
-  const selectedSession = recentSessions.find((s) => s.id === selectedSessionId) ?? recentSessions[0];
+  const selectedSession = recentSessions.find((s) => s.id === selectedSessionId) ?? recentSessions[0] ?? null;
 
   const scoreBreakdown = selectedSession
     ? [
@@ -406,9 +406,12 @@ export default function DashboardPage() {
                   <BarChart3 size={12} className="text-indigo-400" />
                   <h3 className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Score Breakdown</h3>
                 </div>
-                <span className="text-[10px] text-slate-500">{selectedSession.fullDate} · Level {selectedSession.level}</span>
+                {selectedSession && (
+                  <span className="text-[10px] text-slate-500">{selectedSession.fullDate} · Level {selectedSession.level}</span>
+                )}
               </div>
 
+              {selectedSession ? (
               <AnimatePresence mode="wait">
                 <motion.div
                   key={selectedSession.id}
@@ -434,13 +437,18 @@ export default function DashboardPage() {
                   ))}
                 </motion.div>
               </AnimatePresence>
+              ) : (
+                <p className="text-xs text-slate-500 mt-3">No sessions yet. Start practicing to see your scores.</p>
+              )}
 
+              {selectedSession && (
               <div className="mt-2.5 pt-2 border-t border-white/[0.06] flex items-center justify-between">
                 <span className="text-[11px] text-slate-400">Overall</span>
                 <span className="text-lg font-bold text-white">
                   {selectedSession.overallScore}<span className="text-[10px] text-slate-500">/100</span>
                 </span>
               </div>
+              )}
             </motion.div>
 
             {/* Skill Trends Over Time */}

@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { Mic, Play, MessageCircle, Clock3, BarChart3, Globe, Sparkles, AudioLines, Languages, ArrowRight, ChevronRight } from "lucide-react";
+import { Mic, Play, MessageCircle, Clock3, BarChart3, Globe, Sparkles, AudioLines, Languages, ArrowRight, ChevronRight, LayoutDashboard } from "lucide-react";
 import PricingCards from "@/components/PricingCards";
+import { useAuth } from "@/hooks/useAuth";
 
 const fadeUp = (delay = 0) => ({
   initial: { opacity: 0, y: 30 },
@@ -20,6 +21,9 @@ const cardHover = {
 };
 
 export default function Home() {
+  const { user, loading } = useAuth(false);
+  const isLoggedIn = !loading && !!user;
+
   return (
     <main className="min-h-screen bg-[var(--background)] relative overflow-hidden noise-overlay">
       {/* Animated Background Orbs */}
@@ -43,9 +47,16 @@ export default function Home() {
             <Link href="#features" className="hover:text-white transition-colors duration-200">Features</Link>
             <Link href="#pricing" className="hover:text-white transition-colors duration-200">Pricing</Link>
             <Link href="#how-it-works" className="hover:text-white transition-colors duration-200">How It Works</Link>
-            <Link href="/auth" className="hover:text-white transition-colors duration-200">Login</Link>
-            <Link href="/auth" className="btn-primary px-5 py-2.5 flex items-center gap-2 text-sm">
-              <span>Get Started</span>
+            {isLoggedIn ? (
+              <Link href="/dashboard" className="hover:text-white transition-colors duration-200 flex items-center gap-1.5">
+                <LayoutDashboard size={14} />
+                Dashboard
+              </Link>
+            ) : (
+              <Link href="/auth" className="hover:text-white transition-colors duration-200">Login</Link>
+            )}
+            <Link href={isLoggedIn ? "/session" : "/auth"} className="btn-primary px-5 py-2.5 flex items-center gap-2 text-sm">
+              <span>{isLoggedIn ? "Start Session" : "Get Started"}</span>
               <Play size={14} className="fill-current" />
             </Link>
           </nav>
@@ -74,9 +85,9 @@ export default function Home() {
         </motion.p>
 
         <motion.div {...fadeUp(0.3)} className="flex flex-wrap justify-center gap-4">
-          <Link href="/auth" className="btn-primary px-8 py-4 text-lg flex items-center gap-3">
+          <Link href={isLoggedIn ? "/session" : "/auth"} className="btn-primary px-8 py-4 text-lg flex items-center gap-3">
             <Mic size={20} />
-            <span>Practice Now</span>
+            <span>{isLoggedIn ? "Practice Now" : "Get Started"}</span>
             <ArrowRight size={18} />
           </Link>
           <Link href="#pricing" className="btn-secondary px-8 py-4 text-lg flex items-center gap-2">
