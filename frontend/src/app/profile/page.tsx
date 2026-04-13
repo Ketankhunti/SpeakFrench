@@ -21,8 +21,10 @@ import {
   AlertTriangle,
   ChevronRight,
   Target,
+  Camera,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { fetchProfile, uploadAvatar, deleteAccount } from "@/lib/api";
 
 const fadeUp = (delay = 0) => ({
   initial: { opacity: 0, y: 24 },
@@ -53,6 +55,8 @@ export default function ProfilePage() {
   const [passwordStatus, setPasswordStatus] = useState<string | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteText, setDeleteText] = useState("");
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [avatarUploading, setAvatarUploading] = useState(false);
 
   const [account, setAccount] = useState<AccountInfo>({
     memberSince: "—",
@@ -120,58 +124,30 @@ export default function ProfilePage() {
         );
       }
 
-      // Fetch account data
-      const packName: Record<string, string> = {
-        starter: "Starter (3 sessions)",
-        focus: "Focus (5 sessions)",
-        serious: "Serious (10 sessions)",
-        pro: "Pro (25 sessions)",
-      };
-
-      const [packsRes, historyCountRes, profileCreatedRes] = await Promise.all([
-        supabase
-          .from("user_packs")
-          .select("pack_id, sessions_total, sessions_remaining")
-          .eq("user_id", user.id)
-          .order("created_at", { ascending: false }),
-        supabase
-          .from("session_history")
-          .select("id", { count: "exact", head: true })
-          .eq("user_id", user.id),
-        supabase
-          .from("profiles")
-          .select("created_at")
-          .eq("user_id", user.id)
-          .maybeSingle(),
-      ]);
-
-      const packs = packsRes.data ?? [];
-      const sessionsRemaining = packs.reduce((a, p) => a + (p.sessions_remaining ?? 0), 0);
-      const sessionsTotal = packs.reduce((a, p) => a + (p.sessions_total ?? 0), 0);
-      const latestPack = packs[0];
-      const currentPack = latestPack ? (packName[latestPack.pack_id] ?? latestPack.pack_id) : "No pack";
-      const totalSessionsCompleted = historyCountRes.count ?? 0;
-      const memberSince = profileCreatedRes.data?.created_at
-        ? new Date(profileCreatedRes.data.created_at).toLocaleDateString("en-US", {
-            month: "long",
-            day: "numeric",
-            year: "numeric",
-          })
-        : user.created_at
-          ? new Date(user.created_at).toLocaleDateString("en-US", {
+      // Fetch account data from backend (single call)
+      try {
+        const data = await fetchProfile(user.id);
+        if (data.profile?.avatar_url) {
+          setAvatarUrl(data.profile.avatar_url);
+        }
+        const acct = data.account;
+        const memberSince = data.profile?.created_at
+          ? new Date(data.profile.created_at).toLocaleDateString("en-US", {
               month: "long",
               day: "numeric",
               year: "numeric",
             })
           : "—";
-
-      setAccount({
-        memberSince,
-        currentPack,
-        sessionsRemaining,
-        sessionsTotal,
-        totalSessionsCompleted,
-      });
+        setAccount({
+          memberSince,
+          currentPack: acct.current_pack ?? "No pack",
+          sessionsRemaining: acct.sessions_remaining ?? 0,
+          sessionsTotal: acct.sessions_total ?? 0,
+          totalSessionsCompleted: acct.total_sessions_completed ?? 0,
+        });
+      } catch {
+        // Backend may be down — leave defaults
+      }
 
       setLoading(false);
     };
@@ -270,10 +246,26 @@ export default function ProfilePage() {
 
   const handleDeleteAccount = async () => {
     if (deleteText !== "DELETE" || !supabase || !userId) return;
-    // NOTE: Full account deletion requires a backend endpoint with service_role key
-    // For now, sign out and show message
+    try {
+      await deleteAccount(userId);
+    } catch {
+      // ignore — user data may already be gone
+    }
     await supabase.auth.signOut();
     router.push("/");
+  };
+
+  const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !userId) return;
+    setAvatarUploading(true);
+    try {
+      const data = await uploadAvatar(userId, file);
+      setAvatarUrl(data.avatar_url);
+    } catch {
+      // ignore upload errors
+    }
+    setAvatarUploading(false);
   };
 
   // Initials for avatar
@@ -325,8 +317,32 @@ export default function ProfilePage() {
       <div className="relative z-10 mx-auto max-w-4xl px-6 py-10">
         {/* Profile Header with Avatar */}
         <motion.div {...fadeUp(0)} className="flex items-center gap-6 mb-8">
-          <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center text-white text-2xl font-bold shadow-lg shadow-indigo-500/25 shrink-0">
-            {loading ? "..." : initials}
+          <div className="relative group shrink-0">
+            {avatarUrl ? (
+              <img
+                src={avatarUrl}
+                alt="Avatar"
+                className="w-20 h-20 rounded-2xl object-cover shadow-lg shadow-indigo-500/25"
+              />
+            ) : (
+              <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-500 flex items-center justify-center text-white text-2xl font-bold shadow-lg shadow-indigo-500/25">
+                {loading ? "..." : initials}
+              </div>
+            )}
+            <label className="absolute inset-0 flex items-center justify-center rounded-2xl bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer">
+              {avatarUploading ? (
+                <span className="text-white text-xs">...</span>
+              ) : (
+                <Camera size={20} className="text-white" />
+              )}
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleAvatarChange}
+                disabled={avatarUploading || loading}
+              />
+            </label>
           </div>
           <div>
             <h1 className="text-3xl font-bold text-white">{loading ? "Loading..." : profile.fullName || "Your Profile"}</h1>

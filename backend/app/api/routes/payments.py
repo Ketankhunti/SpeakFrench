@@ -9,14 +9,37 @@ stripe.api_key = settings.stripe_secret_key
 
 router = APIRouter()
 
-# Session packs (prices in CAD cents)
-SESSION_PACKS = {
+
+def _get_packs_from_db() -> dict:
+    """Load active session packs from the session_packs table."""
+    supabase = get_supabase_client()
+    result = supabase.table("session_packs").select("*").eq("active", True).order("sort_order").execute()
+    packs = {}
+    for row in result.data or []:
+        packs[row["id"]] = {
+            "sessions": row["sessions"],
+            "price_cents": row["price_cents"],
+            "name": row["name"],
+        }
+    return packs
+
+
+# Fallback packs if DB is unavailable
+_FALLBACK_PACKS = {
     "essai_plus": {"sessions": 2, "price_cents": 399, "name": "Starter"},
     "decouverte": {"sessions": 5, "price_cents": 999, "name": "Focus"},
     "preparation": {"sessions": 20, "price_cents": 2499, "name": "Prep"},
     "intensif": {"sessions": 50, "price_cents": 4999, "name": "Intensive"},
     "marathon": {"sessions": 100, "price_cents": 7999, "name": "Marathon"},
 }
+
+
+def _get_packs() -> dict:
+    try:
+        packs = _get_packs_from_db()
+        return packs if packs else _FALLBACK_PACKS
+    except Exception:
+        return _FALLBACK_PACKS
 
 
 class CheckoutRequest(BaseModel):
@@ -29,6 +52,7 @@ class CheckoutRequest(BaseModel):
 @router.get("/packs")
 async def get_packs():
     """Return available session packs with CAD pricing."""
+    packs = _get_packs()
     return {
         pack_id: {
             "id": pack_id,
@@ -37,14 +61,15 @@ async def get_packs():
             "price_cad": pack["price_cents"] / 100,
             "per_session_cad": round(pack["price_cents"] / 100 / pack["sessions"], 2),
         }
-        for pack_id, pack in SESSION_PACKS.items()
+        for pack_id, pack in packs.items()
     }
 
 
 @router.post("/checkout")
 async def create_checkout(req: CheckoutRequest):
     """Create a Stripe checkout session for a session pack."""
-    pack = SESSION_PACKS.get(req.pack_id)
+    packs = _get_packs()
+    pack = packs.get(req.pack_id)
     if not pack:
         raise HTTPException(status_code=400, detail="Invalid pack ID")
 

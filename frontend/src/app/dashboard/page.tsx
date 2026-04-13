@@ -44,8 +44,7 @@ import {
   Bar,
 } from "recharts";
 import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/lib/supabase";
-import { fetchBalance } from "@/lib/api";
+import { fetchDashboard } from "@/lib/api";
 
 const fadeUp = (delay = 0) => ({
   initial: { opacity: 0, y: 24 },
@@ -84,99 +83,53 @@ export default function DashboardPage() {
   const [practiceDateSet, setPracticeDateSet] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    if (!user || !supabase) return;
+    if (!user) return;
 
     const loadData = async () => {
       setDataLoading(true);
 
-      // Fetch session history
-      const { data: historyData } = await supabase
-        .from("session_history")
-        .select("*")
-        .eq("user_id", user.id)
-        .order("created_at", { ascending: false })
-        .limit(20);
-
-      const sessionHistory = (historyData ?? []).map((row) => {
-        const pScore = Number(row.pronunciation_score) || 0;
-        const gScore = Number(row.grammar_score) || 0;
-        const vScore = Number(row.vocabulary_score) || 0;
-        const cScore = Number(row.coherence_score) || 0;
-        const overall = Math.round((pScore + gScore + vScore + cScore) / 4);
-        const dt = new Date(row.created_at);
-        return {
-          id: row.id,
-          date: dt.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-          fullDate: dt.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
-          level: row.level || "B1",
-          partsCompleted: [row.exam_part || 1],
-          overallScore: overall,
-          scores: {
-            pronunciation: pScore,
-            grammar: gScore,
-            vocabulary: vScore,
-            coherence: cScore,
-          },
-          review: row.ai_review || "No AI review available for this session.",
-          transcript: Array.isArray(row.transcript) ? row.transcript : [],
-        } satisfies SessionData;
-      });
-
-      setSessions(sessionHistory);
-
-      // Practice dates for calendar
-      const dates = new Set<string>();
-      (historyData ?? []).forEach((row) => {
-        const d = new Date(row.created_at);
-        dates.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
-      });
-      setPracticeDateSet(dates);
-
-      // Compute stats
-      const totalSessions = sessionHistory.length;
-      const avgScore = totalSessions > 0
-        ? Math.round(sessionHistory.reduce((a, s) => a + s.overallScore, 0) / totalSessions)
-        : 0;
-      const bestScore = totalSessions > 0
-        ? Math.max(...sessionHistory.map((s) => s.overallScore))
-        : 0;
-      const lastSessionDate = totalSessions > 0 ? sessionHistory[0].date : "—";
-
-      // Streak calculation
-      let streak = 0;
-      if (totalSessions > 0) {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const sortedDates = Array.from(dates).sort().reverse();
-        for (let i = 0; i < sortedDates.length; i++) {
-          const d = new Date(sortedDates[i]);
-          d.setHours(0, 0, 0, 0);
-          const diff = Math.round((today.getTime() - d.getTime()) / (1000 * 60 * 60 * 24));
-          if (diff === i || diff === i + 1) {
-            streak++;
-          } else {
-            break;
-          }
-        }
-      }
-
-      // Fetch balance
-      let sessionsRemaining = 0;
       try {
-        const balance = await fetchBalance(user.id);
-        sessionsRemaining = balance.sessions_remaining ?? 0;
-      } catch {
-        // ignore if backend is down
-      }
+        const data = await fetchDashboard(user.id);
 
-      setStats({
-        totalSessions,
-        avgScore,
-        bestScore,
-        sessionsRemaining,
-        streak,
-        lastSessionDate,
-      });
+        // Map backend sessions to frontend SessionData
+        const sessionHistory: SessionData[] = (data.sessions ?? []).map((row: Record<string, unknown>) => {
+          const p = Number(row.pronunciation_score) || 0;
+          const g = Number(row.grammar_score) || 0;
+          const v = Number(row.vocabulary_score) || 0;
+          const c = Number(row.coherence_score) || 0;
+          const overall = Number(row.overall_score) || Math.round((p + g + v + c) / 4);
+          const dt = new Date(row.created_at as string);
+          return {
+            id: row.id as string,
+            date: dt.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+            fullDate: dt.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
+            level: (row.level as string) || "B1",
+            partsCompleted: [Number(row.exam_part) || 1],
+            overallScore: overall,
+            scores: { pronunciation: p, grammar: g, vocabulary: v, coherence: c },
+            review: (row.ai_review as string) || "No AI review available for this session.",
+            transcript: Array.isArray(row.transcript) ? row.transcript : [],
+          };
+        });
+
+        setSessions(sessionHistory);
+        setPracticeDateSet(new Set(data.practice_dates ?? []));
+
+        const s = data.stats ?? {};
+        const lastDt = s.last_session_date ? new Date(s.last_session_date) : null;
+        setStats({
+          totalSessions: s.total_sessions ?? 0,
+          avgScore: s.avg_score ?? 0,
+          bestScore: s.best_score ?? 0,
+          sessionsRemaining: s.sessions_remaining ?? 0,
+          streak: s.streak ?? 0,
+          lastSessionDate: lastDt
+            ? lastDt.toLocaleDateString("en-US", { month: "short", day: "numeric" })
+            : "—",
+        });
+      } catch {
+        // Backend unavailable — leave empty state
+      }
 
       setDataLoading(false);
     };

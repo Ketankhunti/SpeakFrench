@@ -1,5 +1,7 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+// ── Payments ──
+
 export async function fetchPacks() {
   const res = await fetch(`${API_URL}/api/payments/packs`);
   if (!res.ok) throw new Error("Failed to fetch packs");
@@ -29,5 +31,53 @@ export async function createCheckout(
 export async function fetchBalance(userId: string) {
   const res = await fetch(`${API_URL}/api/payments/balance/${userId}`);
   if (!res.ok) throw new Error("Failed to fetch balance");
+  return res.json();
+}
+
+// ── Profile ──
+
+export async function fetchProfile(userId: string) {
+  const res = await fetch(`${API_URL}/api/profile/${userId}`);
+  if (!res.ok) throw new Error("Failed to fetch profile");
+  return res.json();
+}
+
+export async function updateProfile(
+  userId: string,
+  data: { full_name?: string; email?: string; avatar_url?: string }
+) {
+  const res = await fetch(`${API_URL}/api/profile/${userId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error("Failed to update profile");
+  return res.json();
+}
+
+export async function uploadAvatar(userId: string, file: File) {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await fetch(`${API_URL}/api/profile/${userId}/avatar`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) throw new Error("Failed to upload avatar");
+  return res.json();
+}
+
+export async function deleteAccount(userId: string) {
+  const res = await fetch(`${API_URL}/api/profile/${userId}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new Error("Failed to delete account");
+  return res.json();
+}
+
+// ── Dashboard ──
+
+export async function fetchDashboard(userId: string) {
+  const res = await fetch(`${API_URL}/api/dashboard/${userId}`);
+  if (!res.ok) throw new Error("Failed to fetch dashboard");
   return res.json();
 }

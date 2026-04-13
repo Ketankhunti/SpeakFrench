@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
-from app.api.routes import session, payments, health
+from app.api.routes import session, payments, health, profile, dashboard
 
 app = FastAPI(
     title="SpeakFrench API",
@@ -21,3 +21,5 @@ app.add_middleware(
 app.include_router(health.router, tags=["health"])
 app.include_router(session.router, prefix="/api/session", tags=["session"])
 app.include_router(payments.router, prefix="/api/payments", tags=["payments"])
+app.include_router(profile.router, prefix="/api/profile", tags=["profile"])
+app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
