@@ -74,7 +74,7 @@ export default function AuthPage() {
 
       // Check if email confirmation is required
       if (data.user && !data.session) {
-        setSuccess("Account created! Check your email to confirm, then sign in.");
+        setSuccess("If this email isn't already registered, you'll receive a confirmation link. Check your inbox (and spam folder).");
         setLoading(false);
         return;
       }
@@ -97,6 +97,29 @@ export default function AuthPage() {
     }
 
     setLoading(false);
+  };
+
+  const handleForgotPassword = async () => {
+    if (!supabase) {
+      setError("Supabase is not configured.");
+      return;
+    }
+    if (!email) {
+      setError("Enter your email address first, then click Forgot password.");
+      return;
+    }
+    setError(null);
+    setSuccess(null);
+
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/auth/reset-password`,
+    });
+
+    if (resetError) {
+      setError(resetError.message);
+    } else {
+      setSuccess("If this email is registered, you'll receive a password reset link.");
+    }
   };
 
   const handleGoogleSignIn = async () => {
@@ -222,6 +245,15 @@ export default function AuthPage() {
                   {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
+              {mode === "login" && (
+                <button
+                  type="button"
+                  onClick={handleForgotPassword}
+                  className="mt-1.5 block text-[11px] text-indigo-400 hover:text-indigo-300 transition-colors"
+                >
+                  Forgot password?
+                </button>
+              )}
             </div>
 
             {/* Confirm Password — signup only */}

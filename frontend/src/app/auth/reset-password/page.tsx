@@ -23,17 +23,26 @@ export default function ResetPasswordPage() {
   const [success, setSuccess] = useState(false);
   const [ready, setReady] = useState(false);
 
-  // Supabase sends a PASSWORD_RECOVERY event when the user arrives via the reset link
+  // Supabase sends a PASSWORD_RECOVERY event when the user arrives via the reset link.
+  // The URL hash contains access_token + type=recovery. We detect it multiple ways
+  // because the event may fire before or after this listener mounts.
   useEffect(() => {
     if (!supabase) return;
 
+    // 1. Check URL hash for recovery type (most reliable)
+    const hash = window.location.hash;
+    if (hash.includes("type=recovery")) {
+      setReady(true);
+    }
+
+    // 2. Listen for the PASSWORD_RECOVERY event
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === "PASSWORD_RECOVERY") {
+      if (event === "PASSWORD_RECOVERY" || event === "SIGNED_IN") {
         setReady(true);
       }
     });
 
-    // Also check if user is already in a session (link already used)
+    // 3. Check if already in a session (event already fired before mount)
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session) setReady(true);
     });
