@@ -57,5 +57,6 @@ async def save_session_result(user_id: str, session_data: dict) -> None:
             "vocabulary_score": session_data.get("vocabulary_score"),
             "coherence_score": session_data.get("coherence_score"),
             "transcript": session_data.get("transcript", []),
+            "ai_review": session_data.get("ai_review"),
         }
     ).execute()

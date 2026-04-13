@@ -43,8 +43,8 @@ export default function Home() {
             <Link href="#features" className="hover:text-white transition-colors duration-200">Features</Link>
             <Link href="#pricing" className="hover:text-white transition-colors duration-200">Pricing</Link>
             <Link href="#how-it-works" className="hover:text-white transition-colors duration-200">How It Works</Link>
-            <Link href="/dashboard" className="hover:text-white transition-colors duration-200">Dashboard</Link>
-            <Link href="/dashboard" className="btn-primary px-5 py-2.5 flex items-center gap-2 text-sm">
+            <Link href="/auth" className="hover:text-white transition-colors duration-200">Login</Link>
+            <Link href="/auth" className="btn-primary px-5 py-2.5 flex items-center gap-2 text-sm">
               <span>Get Started</span>
               <Play size={14} className="fill-current" />
             </Link>
@@ -74,7 +74,7 @@ export default function Home() {
         </motion.p>
 
         <motion.div {...fadeUp(0.3)} className="flex flex-wrap justify-center gap-4">
-          <Link href="/dashboard" className="btn-primary px-8 py-4 text-lg flex items-center gap-3">
+          <Link href="/auth" className="btn-primary px-8 py-4 text-lg flex items-center gap-3">
             <Mic size={20} />
             <span>Practice Now</span>
             <ArrowRight size={18} />

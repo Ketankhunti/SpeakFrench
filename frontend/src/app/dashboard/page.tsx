@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -43,6 +43,9 @@ import {
   BarChart,
   Bar,
 } from "recharts";
+import { useAuth } from "@/hooks/useAuth";
+import { supabase } from "@/lib/supabase";
+import { fetchBalance } from "@/lib/api";
 
 const fadeUp = (delay = 0) => ({
   initial: { opacity: 0, y: 24 },
@@ -67,135 +70,146 @@ interface SessionData {
 }
 
 export default function DashboardPage() {
-  // TODO: Replace with real data from Supabase
-  const stats = {
-    totalSessions: 12,
-    avgScore: 74,
-    bestScore: 89,
-    sessionsRemaining: 8,
-    streak: 5,
-    lastSessionDate: "Apr 10, 2026",
-  };
+  const { user, loading: authLoading } = useAuth();
+  const [dataLoading, setDataLoading] = useState(true);
+  const [sessions, setSessions] = useState<SessionData[]>([]);
+  const [stats, setStats] = useState({
+    totalSessions: 0,
+    avgScore: 0,
+    bestScore: 0,
+    sessionsRemaining: 0,
+    streak: 0,
+    lastSessionDate: "—",
+  });
+  const [practiceDateSet, setPracticeDateSet] = useState<Set<string>>(new Set());
 
-  const recentSessions: SessionData[] = [
-    {
-      id: "1",
-      date: "Apr 10",
-      fullDate: "April 10, 2026",
-      level: "B2",
-      partsCompleted: [1, 2, 3],
-      overallScore: 82,
-      scores: { pronunciation: 85, grammar: 78, vocabulary: 80, coherence: 84 },
-      review:
-        "Excellent session! Your pronunciation is notably strong with clear articulation of nasal vowels. Grammar usage shows solid command of subjunctive mood, though some errors with conditional tenses. Vocabulary is varied and appropriate for B2 level. Work on smoother transitions between ideas for better coherence.",
-      transcript: [
-        { speaker: "examiner", text: "Bonjour et bienvenue à l'examen. Pouvez-vous vous présenter s'il vous plaît?" },
-        { speaker: "user", text: "Bonjour, je m'appelle Marie. J'ai vingt-cinq ans et j'habite à Montréal depuis trois ans." },
-        { speaker: "examiner", text: "Très bien. Parlez-moi de votre travail ou de vos études." },
-        { speaker: "user", text: "Je travaille comme développeuse de logiciels dans une entreprise de technologie. C'est un travail que j'aime beaucoup car il me permet d'être créative." },
-      ],
-    },
-    {
-      id: "2",
-      date: "Apr 8",
-      fullDate: "April 8, 2026",
-      level: "B2",
-      partsCompleted: [1, 3],
-      overallScore: 76,
-      scores: { pronunciation: 78, grammar: 72, vocabulary: 74, coherence: 79 },
-      review:
-        "Good performance overall. Pronunciation is clear but work on liaison between words. Grammar shows occasional errors with past tense agreements. Vocabulary is adequate but could benefit from more idiomatic expressions. Coherence is good with logical flow of ideas.",
-      transcript: [
-        { speaker: "examiner", text: "Aujourd'hui, nous allons discuter de l'environnement. Êtes-vous prêt(e)?" },
-        { speaker: "user", text: "Oui, je suis prête. L'environnement est un sujet qui me tient à cœur." },
-        { speaker: "examiner", text: "Que pensez-vous des actions individuelles pour protéger l'environnement?" },
-        { speaker: "user", text: "Je pense que chaque personne peut faire une différence. Par exemple, on peut réduire notre consommation de plastique." },
-      ],
-    },
-    {
-      id: "3",
-      date: "Apr 6",
-      fullDate: "April 6, 2026",
-      level: "B1",
-      partsCompleted: [1, 2],
-      overallScore: 71,
-      scores: { pronunciation: 73, grammar: 68, vocabulary: 69, coherence: 74 },
-      review:
-        "Steady improvement visible. Pronunciation is becoming more natural. Grammar needs work on article agreement and verb conjugation in complex tenses. Vocabulary is growing but still relies on basic structures. Try to elaborate more on your answers for better coherence.",
-      transcript: [
-        { speaker: "examiner", text: "Bonjour. Parlez-moi de votre ville natale." },
-        { speaker: "user", text: "Ma ville natale est petite mais très belle. Elle se trouve dans le sud de la France." },
-        { speaker: "examiner", text: "Qu'est-ce que vous aimez faire pendant votre temps libre?" },
-        { speaker: "user", text: "J'aime lire des livres et faire de la randonnée dans les montagnes près de chez moi." },
-      ],
-    },
-    {
-      id: "4",
-      date: "Apr 4",
-      fullDate: "April 4, 2026",
-      level: "B1",
-      partsCompleted: [1],
-      overallScore: 68,
-      scores: { pronunciation: 70, grammar: 65, vocabulary: 66, coherence: 71 },
-      review:
-        "Good start at B1 level. Focus on improving pronunciation of 'r' sounds and nasal vowels. Grammar foundations are solid but practice more with passé composé and imparfait distinction. Build vocabulary around daily life topics. Keep practicing!",
-      transcript: [
-        { speaker: "examiner", text: "Bonjour, comment allez-vous aujourd'hui?" },
-        { speaker: "user", text: "Bonjour, je vais bien merci. Et vous?" },
-        { speaker: "examiner", text: "Bien merci. Pouvez-vous me parler de votre famille?" },
-        { speaker: "user", text: "J'ai une petite famille. Mon père est médecin et ma mère est professeure à l'université." },
-      ],
-    },
-    {
-      id: "5",
-      date: "Mar 30",
-      fullDate: "March 30, 2026",
-      level: "B1",
-      partsCompleted: [1, 2, 3],
-      overallScore: 64,
-      scores: { pronunciation: 66, grammar: 60, vocabulary: 63, coherence: 67 },
-      review:
-        "Solid effort covering all three parts. Pronunciation needs more attention to vowel sounds. Grammar errors are frequent but understandable. Expand vocabulary beyond basic connectors. Good attempt at structuring longer responses in Part 3.",
-      transcript: [
-        { speaker: "examiner", text: "Bonjour, parlez-moi de vos loisirs préférés." },
-        { speaker: "user", text: "J'aime beaucoup le cinéma et la musique. Je vais souvent au cinéma le weekend." },
-        { speaker: "examiner", text: "Quel type de films préférez-vous?" },
-        { speaker: "user", text: "Je préfère les films dramatiques et les documentaires. Ils sont très intéressants." },
-      ],
-    },
-    {
-      id: "6",
-      date: "Mar 26",
-      fullDate: "March 26, 2026",
-      level: "A2",
-      partsCompleted: [1],
-      overallScore: 58,
-      scores: { pronunciation: 60, grammar: 55, vocabulary: 57, coherence: 60 },
-      review:
-        "Good foundation at A2 level. Focus on basic sentence structures and high-frequency vocabulary. Pronunciation of French 'r' and nasal vowels needs practice. Keep up the daily practice sessions to build confidence.",
-      transcript: [
-        { speaker: "examiner", text: "Bonjour! Comment vous appelez-vous?" },
-        { speaker: "user", text: "Je m'appelle Pierre. J'ai trente ans." },
-        { speaker: "examiner", text: "Où habitez-vous?" },
-        { speaker: "user", text: "J'habite à Toronto, au Canada." },
-      ],
-    },
-  ];
+  useEffect(() => {
+    if (!user || !supabase) return;
 
-  const [selectedSessionId, setSelectedSessionId] = useState<string>(recentSessions[0].id);
+    const loadData = async () => {
+      setDataLoading(true);
+
+      // Fetch session history
+      const { data: historyData } = await supabase
+        .from("session_history")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false })
+        .limit(20);
+
+      const sessionHistory = (historyData ?? []).map((row) => {
+        const pScore = Number(row.pronunciation_score) || 0;
+        const gScore = Number(row.grammar_score) || 0;
+        const vScore = Number(row.vocabulary_score) || 0;
+        const cScore = Number(row.coherence_score) || 0;
+        const overall = Math.round((pScore + gScore + vScore + cScore) / 4);
+        const dt = new Date(row.created_at);
+        return {
+          id: row.id,
+          date: dt.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+          fullDate: dt.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
+          level: row.level || "B1",
+          partsCompleted: [row.exam_part || 1],
+          overallScore: overall,
+          scores: {
+            pronunciation: pScore,
+            grammar: gScore,
+            vocabulary: vScore,
+            coherence: cScore,
+          },
+          review: row.ai_review || "No AI review available for this session.",
+          transcript: Array.isArray(row.transcript) ? row.transcript : [],
+        } satisfies SessionData;
+      });
+
+      setSessions(sessionHistory);
+
+      // Practice dates for calendar
+      const dates = new Set<string>();
+      (historyData ?? []).forEach((row) => {
+        const d = new Date(row.created_at);
+        dates.add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
+      });
+      setPracticeDateSet(dates);
+
+      // Compute stats
+      const totalSessions = sessionHistory.length;
+      const avgScore = totalSessions > 0
+        ? Math.round(sessionHistory.reduce((a, s) => a + s.overallScore, 0) / totalSessions)
+        : 0;
+      const bestScore = totalSessions > 0
+        ? Math.max(...sessionHistory.map((s) => s.overallScore))
+        : 0;
+      const lastSessionDate = totalSessions > 0 ? sessionHistory[0].date : "—";
+
+      // Streak calculation
+      let streak = 0;
+      if (totalSessions > 0) {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const sortedDates = Array.from(dates).sort().reverse();
+        for (let i = 0; i < sortedDates.length; i++) {
+          const d = new Date(sortedDates[i]);
+          d.setHours(0, 0, 0, 0);
+          const diff = Math.round((today.getTime() - d.getTime()) / (1000 * 60 * 60 * 24));
+          if (diff === i || diff === i + 1) {
+            streak++;
+          } else {
+            break;
+          }
+        }
+      }
+
+      // Fetch balance
+      let sessionsRemaining = 0;
+      try {
+        const balance = await fetchBalance(user.id);
+        sessionsRemaining = balance.sessions_remaining ?? 0;
+      } catch {
+        // ignore if backend is down
+      }
+
+      setStats({
+        totalSessions,
+        avgScore,
+        bestScore,
+        sessionsRemaining,
+        streak,
+        lastSessionDate,
+      });
+
+      setDataLoading(false);
+    };
+
+    void loadData();
+  }, [user]);
+
+  // Use loaded sessions or empty
+  const recentSessions = sessions;
+
+  const [selectedSessionId, setSelectedSessionId] = useState<string>("");
   const [modalContent, setModalContent] = useState<{
     type: "transcript" | "review";
     session: SessionData;
   } | null>(null);
 
+  // Auto-select first session when data loads
+  useEffect(() => {
+    if (recentSessions.length > 0 && !selectedSessionId) {
+      setSelectedSessionId(recentSessions[0].id);
+    }
+  }, [recentSessions, selectedSessionId]);
+
   const selectedSession = recentSessions.find((s) => s.id === selectedSessionId) ?? recentSessions[0];
 
-  const scoreBreakdown = [
-    { label: "Pronunciation", value: selectedSession.scores.pronunciation, color: "from-blue-500 to-cyan-400" },
-    { label: "Grammar", value: selectedSession.scores.grammar, color: "from-emerald-500 to-teal-400" },
-    { label: "Vocabulary", value: selectedSession.scores.vocabulary, color: "from-amber-500 to-orange-400" },
-    { label: "Coherence", value: selectedSession.scores.coherence, color: "from-violet-500 to-purple-400" },
-  ];
+  const scoreBreakdown = selectedSession
+    ? [
+        { label: "Pronunciation", value: selectedSession.scores.pronunciation, color: "from-blue-500 to-cyan-400" },
+        { label: "Grammar", value: selectedSession.scores.grammar, color: "from-emerald-500 to-teal-400" },
+        { label: "Vocabulary", value: selectedSession.scores.vocabulary, color: "from-amber-500 to-orange-400" },
+        { label: "Coherence", value: selectedSession.scores.coherence, color: "from-violet-500 to-purple-400" },
+      ]
+    : [];
 
   // Chart data — oldest first, with individual skill lines
   const chartData = [...recentSessions].reverse().map((s) => ({
@@ -210,16 +224,19 @@ export default function DashboardPage() {
   // ── Computed Analytics ──
 
   // Average scores across all sessions
+  const n = recentSessions.length || 1;
   const avgScores = {
-    pronunciation: Math.round(recentSessions.reduce((a, s) => a + s.scores.pronunciation, 0) / recentSessions.length),
-    grammar: Math.round(recentSessions.reduce((a, s) => a + s.scores.grammar, 0) / recentSessions.length),
-    vocabulary: Math.round(recentSessions.reduce((a, s) => a + s.scores.vocabulary, 0) / recentSessions.length),
-    coherence: Math.round(recentSessions.reduce((a, s) => a + s.scores.coherence, 0) / recentSessions.length),
+    pronunciation: Math.round(recentSessions.reduce((a, s) => a + s.scores.pronunciation, 0) / n),
+    grammar: Math.round(recentSessions.reduce((a, s) => a + s.scores.grammar, 0) / n),
+    vocabulary: Math.round(recentSessions.reduce((a, s) => a + s.scores.vocabulary, 0) / n),
+    coherence: Math.round(recentSessions.reduce((a, s) => a + s.scores.coherence, 0) / n),
   };
 
   // Weakest area
   const skillEntries = Object.entries(avgScores) as [string, number][];
-  const weakest = skillEntries.reduce((min, e) => (e[1] < min[1] ? e : min));
+  const weakest = skillEntries.length > 0
+    ? skillEntries.reduce((min, e) => (e[1] < min[1] ? e : min))
+    : ["pronunciation", 0] as [string, number];
   const weakestLabel = weakest[0].charAt(0).toUpperCase() + weakest[0].slice(1);
   const weakestTips: Record<string, string> = {
     pronunciation: "Focus on nasal vowels (an, en, on), the French 'r', and liaison between words.",
@@ -253,7 +270,9 @@ export default function DashboardPage() {
 
   // Level readiness — based on recent 3 sessions avg
   const recent3 = recentSessions.slice(0, 3);
-  const recent3Avg = Math.round(recent3.reduce((a, s) => a + s.overallScore, 0) / recent3.length);
+  const recent3Avg = recent3.length > 0
+    ? Math.round(recent3.reduce((a, s) => a + s.overallScore, 0) / recent3.length)
+    : 0;
   const levelThresholds = [
     { level: "A2", min: 40, color: "from-slate-400 to-slate-500" },
     { level: "B1", min: 55, color: "from-emerald-500 to-teal-400" },
@@ -275,16 +294,7 @@ export default function DashboardPage() {
   ];
 
   // Practice consistency — calendar-based with month navigation
-  // Mock data: dates when user practiced (would come from Supabase)
-  const practiceDates = new Set([
-    "2026-04-01", "2026-04-03", "2026-04-04", "2026-04-07", "2026-04-08",
-    "2026-04-10", "2026-04-11",
-    "2026-03-03", "2026-03-05", "2026-03-10", "2026-03-14", "2026-03-18",
-    "2026-03-22", "2026-03-26", "2026-03-30",
-    "2026-02-02", "2026-02-05", "2026-02-09", "2026-02-14", "2026-02-18",
-    "2026-02-22",
-    "2026-01-06", "2026-01-12", "2026-01-19", "2026-01-25",
-  ]);
+  const practiceDates = practiceDateSet;
 
   const [calMonth, setCalMonth] = useState(() => {
     const now = new Date();
@@ -372,9 +382,20 @@ export default function DashboardPage() {
       <div className="relative z-10 mx-auto max-w-7xl px-6 py-10">
         {/* Welcome Banner */}
         <motion.div {...fadeUp(0)} className="mb-8">
-          <h1 className="text-3xl font-bold text-white mb-2">Welcome back! 👋</h1>
+          <h1 className="text-3xl font-bold text-white mb-2">
+            Welcome back{user?.user_metadata?.full_name ? `, ${user.user_metadata.full_name.split(" ")[0]}` : ""}! 👋
+          </h1>
           <p className="text-slate-400">Track your progress, review past sessions, and start practicing.</p>
         </motion.div>
+
+        {(authLoading || dataLoading) && (
+          <div className="flex items-center justify-center py-20">
+            <div className="text-slate-400 text-sm">Loading your dashboard...</div>
+          </div>
+        )}
+
+        {!authLoading && !dataLoading && (
+        <>
 
         {/* Quick Actions */}
         <motion.div {...fadeUp(0.05)} className="grid gap-4 md:grid-cols-2 mb-8">
@@ -847,6 +868,9 @@ export default function DashboardPage() {
             <ChevronRight size={16} />
           </Link>
         </motion.div>
+
+        </>
+        )}
       </div>
 
       {/* Transcript / Review Modal */}

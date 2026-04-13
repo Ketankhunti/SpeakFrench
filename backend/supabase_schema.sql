@@ -39,6 +39,7 @@ CREATE TABLE session_history (
     vocabulary_score DECIMAL(5, 1),
     coherence_score DECIMAL(5, 1),
     transcript JSONB DEFAULT '[]',
+    ai_review TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 

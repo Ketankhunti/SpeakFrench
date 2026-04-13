@@ -54,13 +54,12 @@ export default function ProfilePage() {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteText, setDeleteText] = useState("");
 
-  // TODO: Replace with real data from Supabase
-  const [account] = useState<AccountInfo>({
-    memberSince: "March 15, 2026",
-    currentPack: "Focus (5 sessions)",
-    sessionsRemaining: 8,
-    sessionsTotal: 15,
-    totalSessionsCompleted: 12,
+  const [account, setAccount] = useState<AccountInfo>({
+    memberSince: "—",
+    currentPack: "No pack",
+    sessionsRemaining: 0,
+    sessionsTotal: 0,
+    totalSessionsCompleted: 0,
   });
 
   useEffect(() => {
@@ -120,6 +119,59 @@ export default function ProfilePage() {
           { onConflict: "user_id" }
         );
       }
+
+      // Fetch account data
+      const packName: Record<string, string> = {
+        starter: "Starter (3 sessions)",
+        focus: "Focus (5 sessions)",
+        serious: "Serious (10 sessions)",
+        pro: "Pro (25 sessions)",
+      };
+
+      const [packsRes, historyCountRes, profileCreatedRes] = await Promise.all([
+        supabase
+          .from("user_packs")
+          .select("pack_id, sessions_total, sessions_remaining")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("session_history")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", user.id),
+        supabase
+          .from("profiles")
+          .select("created_at")
+          .eq("user_id", user.id)
+          .maybeSingle(),
+      ]);
+
+      const packs = packsRes.data ?? [];
+      const sessionsRemaining = packs.reduce((a, p) => a + (p.sessions_remaining ?? 0), 0);
+      const sessionsTotal = packs.reduce((a, p) => a + (p.sessions_total ?? 0), 0);
+      const latestPack = packs[0];
+      const currentPack = latestPack ? (packName[latestPack.pack_id] ?? latestPack.pack_id) : "No pack";
+      const totalSessionsCompleted = historyCountRes.count ?? 0;
+      const memberSince = profileCreatedRes.data?.created_at
+        ? new Date(profileCreatedRes.data.created_at).toLocaleDateString("en-US", {
+            month: "long",
+            day: "numeric",
+            year: "numeric",
+          })
+        : user.created_at
+          ? new Date(user.created_at).toLocaleDateString("en-US", {
+              month: "long",
+              day: "numeric",
+              year: "numeric",
+            })
+          : "—";
+
+      setAccount({
+        memberSince,
+        currentPack,
+        sessionsRemaining,
+        sessionsTotal,
+        totalSessionsCompleted,
+      });
 
       setLoading(false);
     };
