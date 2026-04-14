@@ -24,7 +24,7 @@ async def get_profile(user_id: str):
         supabase.table("profiles")
         .select("user_id, full_name, email, avatar_url, created_at")
         .eq("user_id", user_id)
-        .maybeSingle()
+        .maybe_single()
         .execute()
     )
     profile = profile_res.data

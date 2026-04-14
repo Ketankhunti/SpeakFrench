@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
 from app.services.db_service import get_supabase_client
+from app.services.llm_service import generate_session_review
 
 router = APIRouter()
 
@@ -109,3 +110,47 @@ async def get_dashboard(user_id: str):
         },
         "practice_dates": sorted(practice_dates),
     }
+
+
+@router.post("/{user_id}/session/{session_id}/regenerate-review")
+async def regenerate_review(user_id: str, session_id: str):
+    """Regenerate AI review for a session that has a transcript but no review."""
+    supabase = get_supabase_client()
+
+    # Fetch the session
+    result = (
+        supabase.table("session_history")
+        .select("id, transcript, ai_review, level")
+        .eq("id", session_id)
+        .eq("user_id", user_id)
+        .single()
+        .execute()
+    )
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session = result.data
+    transcript = session.get("transcript") or []
+
+    if not transcript:
+        raise HTTPException(status_code=400, detail="No transcript available to generate review")
+
+    # If review already exists, return it (no need to regenerate)
+    if session.get("ai_review"):
+        return {"ai_review": session["ai_review"], "regenerated": False}
+
+    # Generate review from transcript
+    try:
+        exam_type = "tcf"  # Default; could be stored on session
+        level = session.get("level", "B1")
+        ai_review = await generate_session_review(transcript, exam_type=exam_type, level=level)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Review generation failed: {str(e)}")
+
+    # Save the generated review
+    supabase.table("session_history").update(
+        {"ai_review": ai_review}
+    ).eq("id", session_id).execute()
+
+    return {"ai_review": ai_review, "regenerated": True}

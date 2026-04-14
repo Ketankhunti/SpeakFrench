@@ -107,11 +107,21 @@ export function useSession({
 
   const disconnect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
+      // Send end_session — DON'T close yet, wait for server to send summary
       wsRef.current.send(JSON.stringify({ type: "end_session" }));
-      wsRef.current.close();
+      // Server will send session_summary then we close in onmessage or after timeout
+      const ws = wsRef.current;
+      setTimeout(() => {
+        // Safety: force close if server doesn't respond within 15s
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close();
+        }
+      }, 15000);
+    } else {
+      setIsConnected(false);
+      onClose?.();
     }
-    setIsConnected(false);
-  }, []);
+  }, [onClose]);
 
   const startRecording = useCallback(async () => {
     try {

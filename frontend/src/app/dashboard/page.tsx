@@ -44,7 +44,7 @@ import {
   Bar,
 } from "recharts";
 import { useAuth } from "@/hooks/useAuth";
-import { fetchDashboard } from "@/lib/api";
+import { fetchDashboard, regenerateReview } from "@/lib/api";
 
 const fadeUp = (delay = 0) => ({
   initial: { opacity: 0, y: 24 },
@@ -73,16 +73,10 @@ export default function DashboardPage() {
   const { user, loading: authLoading } = useAuth();
   const [dataLoading, setDataLoading] = useState(true);
   const [sessions, setSessions] = useState<SessionData[]>([]);
-  const [stats, setStats] = useState({
-    totalSessions: 0,
-    avgScore: 0,
-    bestScore: 0,
-    sessionsRemaining: 0,
-    streak: 0,
-    lastSessionDate: "—",
-  });
+  const [sessionsRemaining, setSessionsRemaining] = useState(0);
   const [practiceDateSet, setPracticeDateSet] = useState<Set<string>>(new Set());
   const [examFilter, setExamFilter] = useState<"tcf" | "tef">("tcf");
+  const [dateFilter, setDateFilter] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user) return;
@@ -124,17 +118,7 @@ export default function DashboardPage() {
         setPracticeDateSet(new Set(data.practice_dates ?? []));
 
         const s = data.stats ?? {};
-        const lastDt = s.last_session_date ? new Date(s.last_session_date) : null;
-        setStats({
-          totalSessions: s.total_sessions ?? 0,
-          avgScore: s.avg_score ?? 0,
-          bestScore: s.best_score ?? 0,
-          sessionsRemaining: s.sessions_remaining ?? 0,
-          streak: s.streak ?? 0,
-          lastSessionDate: lastDt
-            ? lastDt.toLocaleDateString("en-US", { month: "short", day: "numeric" })
-            : "—",
-        });
+        setSessionsRemaining(s.sessions_remaining ?? 0);
       } catch {
         // Backend unavailable — leave empty state
       }
@@ -145,14 +129,24 @@ export default function DashboardPage() {
     void loadData();
   }, [user]);
 
-  // Use loaded sessions, filtered by exam type
-  const recentSessions = sessions.filter((s) => s.examType === examFilter);
+  // Use loaded sessions, filtered by exam type and optional date
+  const recentSessions = sessions.filter((s) => {
+    if (s.examType !== examFilter) return false;
+    if (dateFilter) {
+      // dateFilter is "YYYY-MM-DD", s.fullDate is like "April 14, 2026"
+      const sessionDate = new Date(s.fullDate);
+      const sd = `${sessionDate.getFullYear()}-${String(sessionDate.getMonth() + 1).padStart(2, "0")}-${String(sessionDate.getDate()).padStart(2, "0")}`;
+      if (sd !== dateFilter) return false;
+    }
+    return true;
+  });
 
   const [selectedSessionId, setSelectedSessionId] = useState<string>("");
   const [modalContent, setModalContent] = useState<{
     type: "transcript" | "review";
     session: SessionData;
   } | null>(null);
+  const [regenerating, setRegenerating] = useState(false);
 
   // Auto-select first session when data loads
   useEffect(() => {
@@ -162,6 +156,58 @@ export default function DashboardPage() {
   }, [recentSessions, selectedSessionId]);
 
   const selectedSession = recentSessions.find((s) => s.id === selectedSessionId) ?? recentSessions[0] ?? null;
+
+  // Exam-filtered sessions (without date filter) — used for stats & calendar
+  const examFilteredSessions = useMemo(
+    () => sessions.filter((s) => s.examType === examFilter),
+    [sessions, examFilter]
+  );
+
+  // Compute stats from filtered sessions
+  const filteredStats = useMemo(() => {
+    const total = examFilteredSessions.length;
+    const scores = examFilteredSessions.map((s) => s.overallScore);
+    const avg = total > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / total) : 0;
+    const best = total > 0 ? Math.max(...scores) : 0;
+
+    // Streak: consecutive days with sessions (exam-specific)
+    const dateSet = new Set(
+      examFilteredSessions.map((s) => {
+        const dt = new Date(s.fullDate);
+        return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+      })
+    );
+    const sortedDates = [...dateSet].sort().reverse();
+    let streak = 0;
+    const today = new Date();
+    const checkDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    for (const d of sortedDates) {
+      const key = `${checkDate.getFullYear()}-${String(checkDate.getMonth() + 1).padStart(2, "0")}-${String(checkDate.getDate()).padStart(2, "0")}`;
+      if (d === key) {
+        streak++;
+        checkDate.setDate(checkDate.getDate() - 1);
+      } else if (d < key) {
+        break;
+      }
+    }
+
+    const lastSession = examFilteredSessions[0];
+    const lastSessionDate = lastSession
+      ? new Date(lastSession.fullDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })
+      : "—";
+
+    return { totalSessions: total, avgScore: avg, bestScore: best, streak, lastSessionDate };
+  }, [examFilteredSessions]);
+
+  // Practice dates filtered by exam type
+  const filteredPracticeDates = useMemo(() => {
+    const dates = new Set<string>();
+    examFilteredSessions.forEach((s) => {
+      const dt = new Date(s.fullDate);
+      dates.add(`${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`);
+    });
+    return dates;
+  }, [examFilteredSessions]);
 
   const scoreBreakdown = selectedSession
     ? [
@@ -255,7 +301,7 @@ export default function DashboardPage() {
   ];
 
   // Practice consistency — calendar-based with month navigation
-  const practiceDates = practiceDateSet;
+  const practiceDates = filteredPracticeDates;
 
   const [calMonth, setCalMonth] = useState(() => {
     const now = new Date();
@@ -298,12 +344,12 @@ export default function DashboardPage() {
   const calSessionCount = useMemo(() => {
     const { year, month } = calMonth;
     let count = 0;
-    practiceDates.forEach((d) => {
-      const dt = new Date(d);
+    examFilteredSessions.forEach((s) => {
+      const dt = new Date(s.fullDate);
       if (dt.getFullYear() === year && dt.getMonth() === month) count++;
     });
     return count;
-  }, [calMonth]);
+  }, [calMonth, examFilteredSessions]);
 
   const dayLabels = ["M", "T", "W", "T", "F", "S", "S"];
 
@@ -392,7 +438,7 @@ export default function DashboardPage() {
           ]).map((opt) => (
             <button
               key={opt.value}
-              onClick={() => { setExamFilter(opt.value); setSelectedSessionId(""); }}
+              onClick={() => { setExamFilter(opt.value); setSelectedSessionId(""); setDateFilter(null); }}
               className={`px-4 py-1.5 rounded-lg text-xs font-medium transition-all ${
                 examFilter === opt.value
                   ? "bg-gradient-to-r from-indigo-500 to-violet-500 text-white shadow-lg shadow-indigo-500/25"
@@ -407,12 +453,12 @@ export default function DashboardPage() {
         {/* Stats Grid */}
         <motion.div {...fadeUp(0.1)} className="grid gap-4 grid-cols-2 md:grid-cols-3 lg:grid-cols-6 mb-8">
           {[
-            { icon: Target, label: "Total Sessions", value: String(stats.totalSessions), gradient: "from-blue-500 to-cyan-400" },
-            { icon: TrendingUp, label: "Avg Score", value: `${stats.avgScore}/100`, gradient: "from-emerald-500 to-teal-400" },
-            { icon: Trophy, label: "Best Score", value: `${stats.bestScore}/100`, gradient: "from-amber-500 to-orange-400" },
-            { icon: CreditCard, label: "Sessions Left", value: String(stats.sessionsRemaining), gradient: "from-indigo-500 to-violet-400" },
-            { icon: Sparkles, label: "Day Streak", value: `${stats.streak} days`, gradient: "from-rose-500 to-pink-400" },
-            { icon: Calendar, label: "Last Session", value: stats.lastSessionDate, gradient: "from-cyan-500 to-blue-400" },
+            { icon: Target, label: "Total Sessions", value: String(filteredStats.totalSessions), gradient: "from-blue-500 to-cyan-400" },
+            { icon: TrendingUp, label: "Avg Score", value: `${filteredStats.avgScore}/100`, gradient: "from-emerald-500 to-teal-400" },
+            { icon: Trophy, label: "Best Score", value: `${filteredStats.bestScore}/100`, gradient: "from-amber-500 to-orange-400" },
+            { icon: CreditCard, label: "Sessions Left", value: String(sessionsRemaining), gradient: "from-indigo-500 to-violet-400" },
+            { icon: Sparkles, label: "Day Streak", value: `${filteredStats.streak} day${filteredStats.streak !== 1 ? "s" : ""}`, gradient: "from-rose-500 to-pink-400" },
+            { icon: Calendar, label: "Last Session", value: filteredStats.lastSessionDate, gradient: "from-cyan-500 to-blue-400" },
           ].map((stat, i) => (
             <motion.div key={i} {...fadeUp(0.1 + i * 0.05)} className="glass-card p-4">
               <div className={`inline-flex rounded-xl bg-gradient-to-br ${stat.gradient} p-2 text-white mb-3`}>
@@ -534,6 +580,16 @@ export default function DashboardPage() {
             <div className="flex items-center gap-2 mb-4">
               <Clock3 size={14} className="text-indigo-400" />
               <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Recent Sessions</h3>
+              {dateFilter && (
+                <button
+                  onClick={() => setDateFilter(null)}
+                  className="ml-auto inline-flex items-center gap-1.5 rounded-full bg-indigo-500/15 border border-indigo-400/20 px-2.5 py-1 text-[10px] font-medium text-indigo-300 hover:bg-indigo-500/25 transition-colors"
+                >
+                  <CalendarDays size={10} />
+                  {new Date(dateFilter + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                  <X size={10} />
+                </button>
+              )}
             </div>
 
             <div className="overflow-y-auto max-h-[420px] pr-1 space-y-2 scrollbar-thin">
@@ -828,14 +884,22 @@ export default function DashboardPage() {
                       calMonth.year === new Date().getFullYear() &&
                       calMonth.month === new Date().getMonth() &&
                       day === new Date().getDate();
+                    const isFilteredDate = dateFilter === dateStr;
                     return (
                       <div
                         key={di}
+                        onClick={() => {
+                          if (active) {
+                            setDateFilter(isFilteredDate ? null : dateStr);
+                          }
+                        }}
                         className={`h-7 rounded-md flex items-center justify-center text-[10px] font-medium transition-colors ${
-                          active
-                            ? "bg-emerald-500/25 text-emerald-400 border border-emerald-400/20"
-                            : "bg-white/[0.03] text-slate-600 border border-white/[0.04]"
-                        } ${isToday ? "ring-1 ring-indigo-400/50" : ""}`}
+                          isFilteredDate
+                            ? "bg-indigo-500/30 text-indigo-300 border border-indigo-400/40 ring-1 ring-indigo-400/50"
+                            : active
+                              ? "bg-emerald-500/25 text-emerald-400 border border-emerald-400/20 cursor-pointer hover:bg-emerald-500/35"
+                              : "bg-white/[0.03] text-slate-600 border border-white/[0.04]"
+                        } ${isToday && !isFilteredDate ? "ring-1 ring-indigo-400/50" : ""}`}
                       >
                         {day}
                       </div>
@@ -922,6 +986,49 @@ export default function DashboardPage() {
                       <p className="text-sm text-slate-300 leading-relaxed">{entry.text}</p>
                     </div>
                   ))}
+                </div>
+              ) : modalContent.session.review === "No AI review available for this session." ? (
+                <div className="text-center py-8">
+                  <p className="text-sm text-slate-400 mb-4">No AI review was generated for this session.</p>
+                  <button
+                    onClick={async () => {
+                      if (!user) return;
+                      setRegenerating(true);
+                      try {
+                        const result = await regenerateReview(user.id, modalContent.session.id);
+                        if (result.ai_review) {
+                          // Update the session in state
+                          setSessions((prev) =>
+                            prev.map((s) =>
+                              s.id === modalContent.session.id ? { ...s, review: result.ai_review } : s
+                            )
+                          );
+                          setModalContent({
+                            ...modalContent,
+                            session: { ...modalContent.session, review: result.ai_review },
+                          });
+                        }
+                      } catch {
+                        // silently fail
+                      } finally {
+                        setRegenerating(false);
+                      }
+                    }}
+                    disabled={regenerating}
+                    className="btn-primary px-6 py-2 text-sm font-semibold text-white inline-flex items-center gap-2 disabled:opacity-50"
+                  >
+                    {regenerating ? (
+                      <>
+                        <div className="h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                        Generating...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles size={14} />
+                        Generate Review
+                      </>
+                    )}
+                  </button>
                 </div>
               ) : (
                 <div className="bg-violet-500/10 border border-violet-400/15 rounded-xl px-5 py-4">

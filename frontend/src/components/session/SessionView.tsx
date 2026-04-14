@@ -59,6 +59,8 @@ export default function SessionView({
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [showReview, setShowReview] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isEnding, setIsEnding] = useState(false);
+  const [sessionEnded, setSessionEnded] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -99,6 +101,8 @@ export default function SessionView({
         }
 
         case "session_summary": {
+          setIsProcessing(false);
+          setIsEnding(false);
           setSessionSummary({
             duration_seconds: msg.duration_seconds ?? 0,
             exchanges: msg.exchanges ?? 0,
@@ -111,6 +115,36 @@ export default function SessionView({
             ai_review: msg.ai_review ?? null,
             transcript: msg.transcript ?? [],
           });
+          break;
+        }
+
+        case "stt_error": {
+          // STT failed — let user try again, clear processing state
+          setIsProcessing(false);
+          setError(msg.message || "Could not understand your speech. Please try again.");
+          // Auto-clear error after 4s
+          setTimeout(() => setError(null), 4000);
+          break;
+        }
+
+        case "session_timeout": {
+          setIsProcessing(false);
+          setError(msg.message || "Session timed out.");
+          break;
+        }
+
+        case "session_ended": {
+          // 0 exchanges — credit preserved
+          setIsProcessing(false);
+          setIsEnding(false);
+          setSessionEnded(true);
+          break;
+        }
+
+        case "error": {
+          setIsProcessing(false);
+          setIsEnding(false);
+          setError(msg.message || "An error occurred.");
           break;
         }
       }
@@ -170,6 +204,7 @@ export default function SessionView({
   }, [isRecording, startRecording, stopRecording]);
 
   const handleEndSession = () => {
+    setIsEnding(true);
     disconnect();
   };
 
@@ -178,6 +213,28 @@ export default function SessionView({
     const secs = seconds % 60;
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
+
+  // -- Session ended with 0 exchanges (credit preserved) --
+  if (sessionEnded) {
+    return (
+      <div className="mx-auto max-w-lg p-6 text-center">
+        <div className="inline-flex rounded-2xl bg-slate-700/50 p-4 text-slate-300 mb-4">
+          <CheckCircle2 size={32} />
+        </div>
+        <h1 className="text-2xl font-bold text-white mb-2">Session Ended</h1>
+        <p className="text-slate-400 mb-6">
+          No exchanges were completed. Your session credit has been preserved.
+        </p>
+        <button
+          onClick={onSessionEnd}
+          className="btn-primary px-8 py-3 font-semibold text-white inline-flex items-center gap-2"
+        >
+          Go to Dashboard
+          <ArrowRight size={16} />
+        </button>
+      </div>
+    );
+  }
 
   // -- Session Summary (end-of-session comprehensive review) --
   if (sessionSummary) {
@@ -316,10 +373,11 @@ export default function SessionView({
           </div>
           <button
             onClick={handleEndSession}
-            className="flex items-center gap-2 rounded-xl bg-red-500/20 border border-red-400/20 px-4 py-2 text-red-400 transition-all hover:bg-red-500/30 hover:text-red-300"
+            disabled={isEnding}
+            className="flex items-center gap-2 rounded-xl bg-red-500/20 border border-red-400/20 px-4 py-2 text-red-400 transition-all hover:bg-red-500/30 hover:text-red-300 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <PhoneOff size={16} />
-            End Session
+            {isEnding ? "Ending..." : "End Session"}
           </button>
         </div>
       </div>
@@ -367,8 +425,16 @@ export default function SessionView({
           </div>
         </div>
 
+        {/* Ending overlay */}
+        {isEnding && (
+          <div className="mx-6 mb-2 rounded-xl bg-indigo-500/10 border border-indigo-400/20 p-4 text-center">
+            <div className="h-2 w-2 animate-pulse rounded-full bg-indigo-400 mx-auto mb-2" />
+            <span className="text-sm text-indigo-300">Ending session &amp; generating your review...</span>
+          </div>
+        )}
+
         {/* Error */}
-        {error && (
+        {error && !isEnding && (
           <div className="mx-6 mb-2 rounded-xl bg-red-500/10 border border-red-400/20 p-3 text-sm text-red-300">
             {error}
           </div>

@@ -1,6 +1,26 @@
 import json
+import io
 import azure.cognitiveservices.speech as speechsdk
+from pydub import AudioSegment
+import imageio_ffmpeg
 from app.core.config import settings
+
+# Point pydub to the bundled ffmpeg
+AudioSegment.converter = imageio_ffmpeg.get_ffmpeg_exe()
+AudioSegment.ffprobe = imageio_ffmpeg.get_ffmpeg_exe()
+
+
+def _convert_to_wav(audio_data: bytes) -> bytes:
+    """Convert any audio format (WebM/Opus, MP3, etc.) to 16kHz mono WAV for Azure STT."""
+    try:
+        # Explicitly specify webm format so pydub doesn't need ffprobe to detect it
+        audio = AudioSegment.from_file(io.BytesIO(audio_data), format="webm")
+        audio = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
+        wav_buffer = io.BytesIO()
+        audio.export(wav_buffer, format="wav")
+        return wav_buffer.getvalue()
+    except Exception as e:
+        raise ValueError(f"Audio conversion failed: {e}")
 
 
 def get_speech_config() -> speechsdk.SpeechConfig:
@@ -14,10 +34,15 @@ def get_speech_config() -> speechsdk.SpeechConfig:
 
 async def speech_to_text(audio_data: bytes) -> dict:
     """Transcribe French speech audio to text using Azure STT."""
+    try:
+        wav_data = _convert_to_wav(audio_data)
+    except ValueError as e:
+        return {"text": "", "success": False, "error": str(e)}
+
     speech_config = get_speech_config()
 
     audio_stream = speechsdk.audio.PushAudioInputStream()
-    audio_stream.write(audio_data)
+    audio_stream.write(wav_data)
     audio_stream.close()
 
     audio_config = speechsdk.audio.AudioConfig(stream=audio_stream)
@@ -44,6 +69,11 @@ async def speech_to_text(audio_data: bytes) -> dict:
 
 async def speech_to_text_with_pronunciation(audio_data: bytes, reference_text: str = "") -> dict:
     """Transcribe and assess pronunciation of French speech."""
+    try:
+        wav_data = _convert_to_wav(audio_data)
+    except ValueError as e:
+        return {"text": "", "success": False, "error": str(e)}
+
     speech_config = get_speech_config()
 
     pronunciation_config = speechsdk.PronunciationAssessmentConfig(
@@ -54,7 +84,7 @@ async def speech_to_text_with_pronunciation(audio_data: bytes, reference_text: s
     )
 
     audio_stream = speechsdk.audio.PushAudioInputStream()
-    audio_stream.write(audio_data)
+    audio_stream.write(wav_data)
     audio_stream.close()
 
     audio_config = speechsdk.audio.AudioConfig(stream=audio_stream)

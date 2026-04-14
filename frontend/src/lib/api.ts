@@ -81,3 +81,12 @@ export async function fetchDashboard(userId: string) {
   if (!res.ok) throw new Error("Failed to fetch dashboard");
   return res.json();
 }
+
+export async function regenerateReview(userId: string, sessionId: string) {
+  const res = await fetch(
+    `${API_URL}/api/dashboard/${userId}/session/${sessionId}/regenerate-review`,
+    { method: "POST" }
+  );
+  if (!res.ok) throw new Error("Failed to regenerate review");
+  return res.json();
+}

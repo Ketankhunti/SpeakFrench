@@ -1,9 +1,24 @@
 from supabase import create_client, Client
 from app.core.config import settings
 
+# Track active WebSocket sessions per user (single-server; use Redis for multi-server)
+_active_sessions: set[str] = set()
+
 
 def get_supabase_client() -> Client:
     return create_client(settings.supabase_url, settings.supabase_service_key)
+
+
+def is_session_active(user_id: str) -> bool:
+    return user_id in _active_sessions
+
+
+def set_session_active(user_id: str) -> None:
+    _active_sessions.add(user_id)
+
+
+def clear_session_active(user_id: str) -> None:
+    _active_sessions.discard(user_id)
 
 
 async def get_user_session_balance(user_id: str) -> int:
@@ -38,6 +53,32 @@ async def deduct_session(user_id: str) -> bool:
     pack = result.data[0]
     supabase.table("user_packs").update(
         {"sessions_remaining": pack["sessions_remaining"] - 1}
+    ).eq("id", pack["id"]).execute()
+
+    return True
+
+
+async def refund_session(user_id: str) -> bool:
+    """Refund one session to user's most recently deducted pack."""
+    supabase = get_supabase_client()
+    result = (
+        supabase.table("user_packs")
+        .select("id, sessions_remaining, sessions_total")
+        .eq("user_id", user_id)
+        .order("updated_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+
+    if not result.data:
+        return False
+
+    pack = result.data[0]
+    if pack["sessions_remaining"] >= pack["sessions_total"]:
+        return False  # Already at max, nothing to refund
+
+    supabase.table("user_packs").update(
+        {"sessions_remaining": pack["sessions_remaining"] + 1}
     ).eq("id", pack["id"]).execute()
 
     return True
