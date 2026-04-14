@@ -11,12 +11,14 @@ from app.services.llm_service import get_conversation_response, evaluate_respons
 from app.services.db_service import (
     get_user_session_balance, deduct_session, refund_session,
     save_session_result, is_session_active, set_session_active, clear_session_active,
+    has_demo_remaining, mark_demo_consumed,
 )
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 SESSION_TIMEOUT = 20 * 60  # 20 minutes max session
+DEMO_SESSION_TIMEOUT = 4 * 60  # 4 minutes max for free demo
 IDLE_TIMEOUT = 5 * 60      # 5 minutes no activity → auto-end
 
 
@@ -36,6 +38,7 @@ async def session_websocket(websocket: WebSocket, user_id: str):
 
     # ── Guard: duplicate session ──
     if is_session_active(user_id):
+        logger.warning(f"Duplicate session blocked for user {user_id}")
         await websocket.send_json({
             "type": "error",
             "message": "You already have an active session in another tab. Please close it first.",
@@ -43,22 +46,13 @@ async def session_websocket(websocket: WebSocket, user_id: str):
         await websocket.close()
         return
 
-    # ── Guard: balance check ──
-    balance = await get_user_session_balance(user_id)
-    if balance <= 0:
-        await websocket.send_json({"type": "error", "message": "No sessions remaining"})
-        await websocket.close()
-        return
-
-    # Mark session active (prevent duplicate tabs)
-    set_session_active(user_id)
-
     # Session state
     conversation_history: list[dict] = []
     session_start = time.time()
     exam_type = "tcf"
     exam_part = 1
     level = "B1"
+    is_demo = False
     session_scores: list[dict] = []
     credit_deducted = False
     successful_exchanges = 0
@@ -71,6 +65,33 @@ async def session_websocket(websocket: WebSocket, user_id: str):
             exam_type = config_msg.get("exam_type", "tcf")
             exam_part = config_msg.get("exam_part", 1)
             level = config_msg.get("level", "B1")
+            is_demo = bool(config_msg.get("is_demo", False))
+
+        # ── Guard: demo or paid balance check ──
+        if is_demo:
+            if not await has_demo_remaining(user_id):
+                logger.warning(f"Demo already consumed for user {user_id}")
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Demo already consumed. Please purchase a session pack to continue.",
+                })
+                await websocket.close()
+                return
+        else:
+            balance = await get_user_session_balance(user_id)
+            if balance <= 0:
+                logger.warning(f"No sessions remaining for user {user_id}")
+                await websocket.send_json({"type": "error", "message": "No sessions remaining"})
+                await websocket.close()
+                return
+
+        # Mark session active (prevent duplicate tabs)
+        set_session_active(user_id)
+        logger.info(
+            f"Session started for user {user_id} "
+            f"(mode={'demo' if is_demo else 'paid'})"
+        )
+        session_timeout = DEMO_SESSION_TIMEOUT if is_demo else SESSION_TIMEOUT
 
         # ── Greeting ──
         try:
@@ -105,10 +126,10 @@ async def session_websocket(websocket: WebSocket, user_id: str):
         while True:
             # Check session timeout
             elapsed = time.time() - session_start
-            if elapsed > SESSION_TIMEOUT:
+            if elapsed > session_timeout:
                 await websocket.send_json({
                     "type": "session_timeout",
-                    "message": "Session time limit reached (20 minutes).",
+                    "message": "Demo time limit reached (4 minutes)." if is_demo else "Session time limit reached (20 minutes).",
                 })
                 break
 
@@ -174,7 +195,7 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                     # Non-critical — continue without score for this exchange
 
                 # ── Deduct credit on first successful exchange ──
-                if not credit_deducted:
+                if not is_demo and not credit_deducted:
                     credit_deducted = await deduct_session(user_id)
                     if not credit_deducted:
                         await websocket.send_json({
@@ -263,7 +284,15 @@ async def session_websocket(websocket: WebSocket, user_id: str):
 
         # ── Generate AI review (best-effort) ──
         avg_scores = _average_scores(session_scores)
+        corrections = _collect_corrections(session_scores)
         ai_review = None
+
+        if is_demo:
+            try:
+                await mark_demo_consumed(user_id)
+            except Exception as e:
+                logger.error(f"Failed to mark demo consumed for {user_id}: {e}")
+
         if conversation_history:
             try:
                 ai_review = await generate_session_review(
@@ -279,11 +308,13 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                 "exam_type": exam_type,
                 "exam_part": exam_part,
                 "level": level,
+                "is_demo": is_demo,
                 "duration_seconds": duration,
                 "pronunciation_score": avg_scores.get("pronunciation_score"),
                 "grammar_score": avg_scores.get("grammar_score"),
                 "vocabulary_score": avg_scores.get("vocabulary_score"),
                 "coherence_score": avg_scores.get("coherence_score"),
+                "corrections": corrections,
                 "transcript": conversation_history,
                 "ai_review": ai_review,
             })
@@ -297,11 +328,23 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                 "duration_seconds": duration,
                 "scores": avg_scores,
                 "exchanges": successful_exchanges,
+                "is_demo": is_demo,
                 "ai_review": ai_review,
                 "transcript": conversation_history,
             })
         except Exception:
             pass  # Client already disconnected
+
+
+@router.get("/demo-status/{user_id}")
+async def get_demo_status(user_id: str):
+    """Return whether user still has the free demo available."""
+    remaining = await has_demo_remaining(user_id)
+    return {
+        "user_id": user_id,
+        "demo_remaining": remaining,
+        "demo_used": not remaining,
+    }
 
 
 def _average_scores(scores: list[dict]) -> dict:
@@ -339,3 +382,19 @@ def _average_scores(scores: list[dict]) -> dict:
         "vocabulary_score": safe_avg(vocab_scores),
         "coherence_score": safe_avg(coherence_scores),
     }
+
+
+def _collect_corrections(scores: list[dict]) -> list[dict]:
+    """Collect all corrections from evaluations across exchanges."""
+    corrections = []
+    for s in scores:
+        ev = s.get("evaluation", {})
+        for c in ev.get("corrections", []):
+            if isinstance(c, str):
+                corrections.append({"text": c})
+            elif isinstance(c, dict):
+                corrections.append(c)
+        fb = ev.get("feedback")
+        if fb and fb != "Évaluation non disponible.":
+            corrections.append({"feedback": fb})
+    return corrections

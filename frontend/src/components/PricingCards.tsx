@@ -14,11 +14,11 @@ interface Pack {
 }
 
 const FALLBACK_PACKS: Pack[] = [
-  { id: "starter", name: "Starter", sessions: 3, price_cad: 9.99, per_session_cad: 3.33 },
-  { id: "basic", name: "Basic", sessions: 10, price_cad: 24.99, per_session_cad: 2.50 },
-  { id: "preparation", name: "Preparation", sessions: 25, price_cad: 49.99, per_session_cad: 2.00 },
-  { id: "intensive", name: "Intensive", sessions: 50, price_cad: 79.99, per_session_cad: 1.60 },
-  { id: "unlimited", name: "Pro", sessions: 100, price_cad: 129.99, per_session_cad: 1.30 },
+  { id: "essai_plus", name: "Starter", sessions: 2, price_cad: 3.99, per_session_cad: 2.00 },
+  { id: "decouverte", name: "Focus", sessions: 5, price_cad: 9.99, per_session_cad: 2.00 },
+  { id: "preparation", name: "Prep", sessions: 20, price_cad: 24.99, per_session_cad: 1.25 },
+  { id: "intensif", name: "Intensive", sessions: 50, price_cad: 49.99, per_session_cad: 1.00 },
+  { id: "marathon", name: "Marathon", sessions: 100, price_cad: 79.99, per_session_cad: 0.80 },
 ];
 
 const cardVariants = {
@@ -31,7 +31,8 @@ const cardVariants = {
 };
 
 export default function PricingCards({ userId, compact }: { userId?: string; compact?: boolean }) {
-  const [packs, setPacks] = useState<Pack[]>(FALLBACK_PACKS);
+  const [packs, setPacks] = useState<Pack[] | null>(null);
+  const [packsLoading, setPacksLoading] = useState(true);
   const [loading, setLoading] = useState<string | null>(null);
 
   useEffect(() => {
@@ -40,10 +41,16 @@ export default function PricingCards({ userId, compact }: { userId?: string; com
         const values = Object.values(data) as Pack[];
         if (values.length > 0) {
           setPacks(values.sort((a, b) => a.price_cad - b.price_cad));
+        } else {
+          setPacks(FALLBACK_PACKS);
         }
       })
       .catch(() => {
-        // API unavailable — keep fallback packs
+        // API unavailable — use fallback packs
+        setPacks(FALLBACK_PACKS);
+      })
+      .finally(() => {
+        setPacksLoading(false);
       });
   }, []);
 
@@ -64,10 +71,32 @@ export default function PricingCards({ userId, compact }: { userId?: string; com
   };
 
   const highlighted = "preparation";
-  const displayPacks = compact ? packs.slice(0, 3) : packs;
+  const safePacks = packs ?? [];
+  const displayPacks = compact ? safePacks.slice(0, 3) : safePacks;
   const gridCols = compact
     ? "md:grid-cols-3"
     : "md:grid-cols-2 lg:grid-cols-5";
+
+  if (packsLoading) {
+    return (
+      <div className={`mx-auto grid max-w-7xl grid-cols-1 gap-5 ${gridCols}`}>
+        {Array.from({ length: compact ? 3 : 5 }).map((_, i) => (
+          <div key={i} className="glass-card p-6 animate-pulse">
+            <div className="h-6 w-24 rounded bg-white/10" />
+            <div className="mt-3 h-10 w-36 rounded bg-white/10" />
+            <div className="mt-2 h-5 w-28 rounded bg-white/10" />
+            <div className="mt-6 space-y-3">
+              <div className="h-4 w-full rounded bg-white/10" />
+              <div className="h-4 w-11/12 rounded bg-white/10" />
+              <div className="h-4 w-10/12 rounded bg-white/10" />
+              <div className="h-4 w-8/12 rounded bg-white/10" />
+            </div>
+            <div className="mt-6 h-11 w-full rounded-xl bg-white/10" />
+          </div>
+        ))}
+      </div>
+    );
+  }
 
   return (
     <div className={`mx-auto grid max-w-7xl grid-cols-1 gap-5 ${gridCols}`}>

@@ -2,6 +2,7 @@
 
 import { useState, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Mic,
@@ -14,8 +15,11 @@ import {
   Sparkles,
   Shield,
   Globe,
+  AlertCircle,
+  CreditCard,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
+import { fetchBalance, fetchDemoStatus } from "@/lib/api";
 import SessionView from "@/components/session/SessionView";
 
 const TCF_PARTS = [
@@ -76,11 +80,45 @@ function SessionContent() {
   const [examType, setExamType] = useState<"tcf" | "tef">("tcf");
   const [level, setLevel] = useState("B1");
   const [examPart, setExamPart] = useState(1);
+  const [accessError, setAccessError] = useState<"credits" | "demo" | null>(null);
+  const [checkingBalance, setCheckingBalance] = useState(false);
 
   const userId = user?.id || "demo-user";
   const parts = examType === "tcf" ? TCF_PARTS : TEF_PARTS;
 
-  const startSession = (part: number) => {
+  const startSession = async (part: number) => {
+    setAccessError(null);
+
+    if (isDemo) {
+      setCheckingBalance(true);
+      try {
+        const demo = await fetchDemoStatus(userId);
+        if (demo.demo_used) {
+          setAccessError("demo");
+          setCheckingBalance(false);
+          return;
+        }
+      } catch {
+        // If demo status check fails, backend WS guard will handle it
+      }
+      setCheckingBalance(false);
+      setExamPart(part);
+      setStep("session");
+      return;
+    }
+
+    setCheckingBalance(true);
+    try {
+      const data = await fetchBalance(userId);
+      if ((data.sessions_remaining ?? 0) <= 0) {
+        setAccessError("credits");
+        setCheckingBalance(false);
+        return;
+      }
+    } catch {
+      // If balance check fails, let the WS handle it
+    }
+    setCheckingBalance(false);
     setExamPart(part);
     setStep("session");
   };
@@ -299,13 +337,58 @@ function SessionContent() {
 
               {/* Start exam */}
               <div className="mt-8 text-center">
-                <button
-                  onClick={() => startSession(1)}
-                  className="btn-primary px-8 py-3 font-semibold text-white inline-flex items-center gap-2"
-                >
-                  <Sparkles size={16} />
-                  Start Exam
-                </button>
+                {accessError && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="inline-flex items-center gap-3 bg-rose-500/10 border border-rose-400/20 rounded-xl px-5 py-3 mb-5"
+                  >
+                    <AlertCircle size={18} className="text-rose-400 shrink-0" />
+                    <div className="text-left">
+                      {accessError === "credits" ? (
+                        <>
+                          <p className="text-sm font-medium text-rose-300">No session credits remaining</p>
+                          <p className="text-xs text-slate-400 mt-0.5">
+                            Purchase a session pack to continue practicing.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-sm font-medium text-rose-300">Demo already consumed</p>
+                          <p className="text-xs text-slate-400 mt-0.5">
+                            Your free demo has been used. Purchase a pack to continue.
+                          </p>
+                        </>
+                      )}
+                    </div>
+                    <Link
+                      href="/pricing"
+                      className="ml-2 shrink-0 inline-flex items-center gap-1.5 bg-gradient-to-r from-indigo-500 to-violet-500 text-white text-xs font-semibold px-4 py-2 rounded-lg hover:shadow-lg hover:shadow-indigo-500/25 transition-all"
+                    >
+                      <CreditCard size={12} />
+                      Buy Sessions
+                    </Link>
+                  </motion.div>
+                )}
+                <div>
+                  <button
+                    onClick={() => startSession(1)}
+                    disabled={checkingBalance}
+                    className="btn-primary px-8 py-3 font-semibold text-white inline-flex items-center gap-2 disabled:opacity-50"
+                  >
+                    {checkingBalance ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                        Checking...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles size={16} />
+                        Start Exam
+                      </>
+                    )}
+                  </button>
+                </div>
                 <p className="text-xs text-slate-500 mt-2">The examiner will guide you through all parts sequentially.</p>
               </div>
             </motion.div>

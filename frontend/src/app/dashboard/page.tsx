@@ -2,6 +2,7 @@
 
 import { useState, useMemo, useEffect } from "react";
 import Link from "next/link";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Mic,
@@ -44,7 +45,8 @@ import {
   Bar,
 } from "recharts";
 import { useAuth } from "@/hooks/useAuth";
-import { fetchDashboard, regenerateReview } from "@/lib/api";
+import { fetchDashboard, fetchDemoStatus, regenerateReview } from "@/lib/api";
+import ReviewMarkdown from "@/components/ui/ReviewMarkdown";
 
 const fadeUp = (delay = 0) => ({
   initial: { opacity: 0, y: 24 },
@@ -54,6 +56,7 @@ const fadeUp = (delay = 0) => ({
 interface SessionData {
   id: string;
   examType: string;
+  isDemo: boolean;
   date: string;
   fullDate: string;
   level: string;
@@ -65,6 +68,7 @@ interface SessionData {
     vocabulary: number;
     coherence: number;
   };
+  corrections: { text?: string; feedback?: string }[];
   review: string;
   transcript: { speaker: string; text: string }[];
 }
@@ -75,6 +79,7 @@ export default function DashboardPage() {
   const [sessions, setSessions] = useState<SessionData[]>([]);
   const [sessionsRemaining, setSessionsRemaining] = useState(0);
   const [practiceDateSet, setPracticeDateSet] = useState<Set<string>>(new Set());
+  const [demoUsed, setDemoUsed] = useState(false);
   const [examFilter, setExamFilter] = useState<"tcf" | "tef">("tcf");
   const [dateFilter, setDateFilter] = useState<string | null>(null);
 
@@ -85,7 +90,11 @@ export default function DashboardPage() {
       setDataLoading(true);
 
       try {
-        const data = await fetchDashboard(user.id);
+        const [data, demo] = await Promise.all([
+          fetchDashboard(user.id),
+          fetchDemoStatus(user.id).catch(() => ({ demo_used: false })),
+        ]);
+        setDemoUsed(Boolean(demo.demo_used));
 
         // Map backend sessions to frontend SessionData
         const sessionHistory: SessionData[] = (data.sessions ?? []).map((row: Record<string, unknown>) => {
@@ -98,12 +107,14 @@ export default function DashboardPage() {
           return {
             id: row.id as string,
             examType: (row.exam_type as string) || "tcf",
+            isDemo: Boolean(row.is_demo),
             date: dt.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
             fullDate: dt.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
             level: (row.level as string) || "B1",
             partsCompleted: [Number(row.exam_part) || 1],
             overallScore: overall,
             scores: { pronunciation: p, grammar: g, vocabulary: v, coherence: c },
+            corrections: Array.isArray(row.corrections) ? (row.corrections as { text?: string; feedback?: string }[]) : [],
             review: (row.ai_review as string) || "No AI review available for this session.",
             transcript: Array.isArray(row.transcript)
               ? (row.transcript as { role?: string; content?: string; speaker?: string; text?: string }[]).map((t) => ({
@@ -148,6 +159,15 @@ export default function DashboardPage() {
   } | null>(null);
   const [regenerating, setRegenerating] = useState(false);
 
+  useEffect(() => {
+    if (!modalContent) return;
+    const original = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = original;
+    };
+  }, [modalContent]);
+
   // Auto-select first session when data loads
   useEffect(() => {
     if (recentSessions.length > 0 && !selectedSessionId) {
@@ -157,10 +177,16 @@ export default function DashboardPage() {
 
   const selectedSession = recentSessions.find((s) => s.id === selectedSessionId) ?? recentSessions[0] ?? null;
 
-  // Exam-filtered sessions (without date filter) — used for stats & calendar
+  // Exam-filtered paid sessions (without date filter) — used for stats & calendar
   const examFilteredSessions = useMemo(
-    () => sessions.filter((s) => s.examType === examFilter),
+    () => sessions.filter((s) => s.examType === examFilter && !s.isDemo),
     [sessions, examFilter]
+  );
+
+  // Sessions shown in timeline/list (includes demos)
+  const analyticsSessions = useMemo(
+    () => recentSessions.filter((s) => !s.isDemo),
+    [recentSessions]
   );
 
   // Compute stats from filtered sessions
@@ -219,8 +245,9 @@ export default function DashboardPage() {
     : [];
 
   // Chart data — oldest first, with individual skill lines
-  const chartData = [...recentSessions].reverse().map((s) => ({
+  const chartData = [...analyticsSessions].reverse().map((s, i) => ({
     date: s.date,
+    index: i,
     score: s.overallScore,
     pronunciation: s.scores.pronunciation,
     grammar: s.scores.grammar,
@@ -231,12 +258,12 @@ export default function DashboardPage() {
   // ── Computed Analytics ──
 
   // Average scores across all sessions
-  const n = recentSessions.length || 1;
+  const n = analyticsSessions.length || 1;
   const avgScores = {
-    pronunciation: Math.round(recentSessions.reduce((a, s) => a + s.scores.pronunciation, 0) / n),
-    grammar: Math.round(recentSessions.reduce((a, s) => a + s.scores.grammar, 0) / n),
-    vocabulary: Math.round(recentSessions.reduce((a, s) => a + s.scores.vocabulary, 0) / n),
-    coherence: Math.round(recentSessions.reduce((a, s) => a + s.scores.coherence, 0) / n),
+    pronunciation: Math.round(analyticsSessions.reduce((a, s) => a + s.scores.pronunciation, 0) / n),
+    grammar: Math.round(analyticsSessions.reduce((a, s) => a + s.scores.grammar, 0) / n),
+    vocabulary: Math.round(analyticsSessions.reduce((a, s) => a + s.scores.vocabulary, 0) / n),
+    coherence: Math.round(analyticsSessions.reduce((a, s) => a + s.scores.coherence, 0) / n),
   };
 
   // Weakest area
@@ -246,15 +273,15 @@ export default function DashboardPage() {
     : ["pronunciation", 0] as [string, number];
   const weakestLabel = weakest[0].charAt(0).toUpperCase() + weakest[0].slice(1);
   const weakestTips: Record<string, string> = {
-    pronunciation: "Focus on nasal vowels (an, en, on), the French 'r', and liaison between words.",
-    grammar: "Practice passé composé vs imparfait, subjunctive mood, and article agreements.",
-    vocabulary: "Expand with idiomatic expressions, connectors (cependant, néanmoins), and topic-specific words.",
-    coherence: "Structure answers with introduction → development → conclusion. Use transition phrases.",
+    pronunciation: "Focus on nasal vowels (an, en, on), the French 'r', and linking between words (liaison).",
+    grammar: "Practice past tenses (passe compose vs imparfait), subjunctive mood, and article agreements.",
+    vocabulary: "Expand with idiomatic expressions, connectors (however, nevertheless), and topic-specific words.",
+    coherence: "Structure answers with introduction, development, conclusion. Use transition phrases between ideas.",
   };
 
   // Part performance — average score per exam part
   const partScores: Record<number, { total: number; count: number }> = {};
-  recentSessions.forEach((s) => {
+  analyticsSessions.forEach((s) => {
     s.partsCompleted.forEach((p) => {
       if (!partScores[p]) partScores[p] = { total: 0, count: 0 };
       partScores[p].total += s.overallScore;
@@ -276,7 +303,7 @@ export default function DashboardPage() {
   ];
 
   // Level readiness — based on recent 3 sessions avg
-  const recent3 = recentSessions.slice(0, 3);
+  const recent3 = analyticsSessions.slice(0, 3);
   const recent3Avg = recent3.length > 0
     ? Math.round(recent3.reduce((a, s) => a + s.overallScore, 0) / recent3.length)
     : 0;
@@ -291,14 +318,70 @@ export default function DashboardPage() {
     readiness: Math.min(100, Math.round((recent3Avg / l.min) * 100)),
   }));
 
-  // Common mistakes (extracted from mock review keywords)
-  const commonMistakes = [
-    { area: "Conditional Tenses", frequency: 4, severity: "high" as const },
-    { area: "Article Agreement", frequency: 3, severity: "high" as const },
-    { area: "Nasal Vowels", frequency: 3, severity: "medium" as const },
-    { area: "Liaison Errors", frequency: 2, severity: "medium" as const },
-    { area: "Basic Connectors", frequency: 2, severity: "low" as const },
-  ];
+  // Common mistakes — dynamically generated from score weaknesses + correction patterns
+  const commonMistakes = useMemo(() => {
+    if (analyticsSessions.length === 0) return [];
+
+    const mistakes: { area: string; frequency: number; severity: "high" | "medium" | "low" }[] = [];
+
+    // 1. Primary: derive from actual score categories (most reliable)
+    const scoreWeaknesses = (Object.entries(avgScores) as [string, number][])
+      .filter(([, v]) => v < 70) // flag anything below 70%
+      .sort((a, b) => a[1] - b[1])
+      .map(([key, val]) => ({
+        area: key === "pronunciation" ? "Pronunciation Accuracy" :
+              key === "grammar" ? "Grammar & Conjugation" :
+              key === "vocabulary" ? "Vocabulary Breadth" :
+              "Coherence & Flow",
+        frequency: analyticsSessions.filter((s) => s.scores[key as keyof typeof s.scores] < 50).length,
+        severity: (val < 30 ? "high" : val < 50 ? "medium" : "low") as "high" | "medium" | "low",
+      }));
+
+    scoreWeaknesses.forEach((sw) => {
+      if (sw.frequency > 0 && mistakes.length < 5) {
+        mistakes.push(sw);
+      }
+    });
+
+    // 2. Secondary: count unique correction themes per session (not per correction)
+    // This prevents one verbose session from inflating counts
+    const patternLabels = [
+      { label: "Verb Conjugation", keywords: /conjugai|verbe|conditionnel|subjonctif|imparfait|passé composé|futur/i },
+      { label: "Article & Gender", keywords: /\b(article|genre|masculin|féminin)\b|accord de l'/i },
+      { label: "Sentence Completeness", keywords: /incomplèt|incomplet|réponse complète|phrase complète/i },
+      { label: "Word Choice", keywords: /\b(vocabulaire|lexique|synonyme|expression idiomatique)\b/i },
+      { label: "Sentence Structure", keywords: /\b(structure|syntaxe|ordre des mots)\b/i },
+    ];
+
+    const patternCounts = new Map<string, number>();
+    analyticsSessions.forEach((s) => {
+      // Collect all correction text for this session
+      const sessionTexts = s.corrections.map((c) => [c.text, c.feedback].filter(Boolean).join(" ")).join(" ");
+      if (!sessionTexts) return;
+      // Count each pattern at most once per session
+      patternLabels.forEach((p) => {
+        if (p.keywords.test(sessionTexts)) {
+          patternCounts.set(p.label, (patternCounts.get(p.label) || 0) + 1);
+        }
+      });
+    });
+
+    // Add correction-based items that don't duplicate score-derived ones
+    const existingAreas = new Set(mistakes.map((m) => m.area));
+    [...patternCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .forEach(([area, freq]) => {
+        if (!existingAreas.has(area) && mistakes.length < 5) {
+          mistakes.push({
+            area,
+            frequency: freq,
+            severity: freq >= 3 ? "high" : freq >= 2 ? "medium" : "low",
+          });
+        }
+      });
+
+    return mistakes.slice(0, 5);
+  }, [analyticsSessions, avgScores]);
 
   // Practice consistency — calendar-based with month navigation
   const practiceDates = filteredPracticeDates;
@@ -405,7 +488,10 @@ export default function DashboardPage() {
         <>
 
         {/* Quick Actions */}
-        <motion.div {...fadeUp(0.05)} className="grid gap-4 md:grid-cols-2 mb-8">
+        <motion.div
+          {...fadeUp(0.05)}
+          className={`grid gap-4 ${demoUsed ? "md:grid-cols-1" : "md:grid-cols-2"} mb-8`}
+        >
           <Link href="/session" className="glass-card p-6 flex items-center gap-5 group hover:border-indigo-400/30 transition-all">
             <div className="rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-500 p-4 text-white shadow-lg shadow-indigo-500/25 transition-transform duration-300 group-hover:scale-110">
               <Mic size={28} />
@@ -417,16 +503,18 @@ export default function DashboardPage() {
             <ArrowRight size={20} className="text-slate-500 group-hover:text-indigo-400 transition-colors" />
           </Link>
 
-          <Link href="/session?demo=true" className="glass-card p-6 flex items-center gap-5 group hover:border-emerald-400/30 transition-all">
-            <div className="rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-500 p-4 text-white shadow-lg shadow-emerald-500/25 transition-transform duration-300 group-hover:scale-110">
-              <BookOpen size={28} />
-            </div>
-            <div className="flex-1">
-              <h3 className="text-lg font-semibold text-white mb-1">Quick Demo</h3>
-              <p className="text-sm text-slate-400">Try a free 3-4 minute demo session (Part 1 only).</p>
-            </div>
-            <ArrowRight size={20} className="text-slate-500 group-hover:text-emerald-400 transition-colors" />
-          </Link>
+          {!demoUsed && (
+            <Link href="/session?demo=true" className="glass-card p-6 flex items-center gap-5 group hover:border-emerald-400/30 transition-all">
+              <div className="rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-500 p-4 text-white shadow-lg shadow-emerald-500/25 transition-transform duration-300 group-hover:scale-110">
+                <BookOpen size={28} />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-white mb-1">Quick Demo</h3>
+                <p className="text-sm text-slate-400">Try a free 3-4 minute demo session (Part 1 only).</p>
+              </div>
+              <ArrowRight size={20} className="text-slate-500 group-hover:text-emerald-400 transition-colors" />
+            </Link>
+          )}
         </motion.div>
 
         {/* Exam Type Filter */}
@@ -471,9 +559,9 @@ export default function DashboardPage() {
         </motion.div>
 
         {/* Sessions + Score Breakdown + Graph */}
-        <div className="grid gap-6 lg:grid-cols-5 items-start">
+        <div className="grid gap-6 lg:grid-cols-5 items-start" style={{ overflow: "visible" }}>
           {/* Left Column: Score Breakdown + Progress Graph */}
-          <div className="lg:col-span-2 flex flex-col gap-6">
+          <div className="lg:col-span-2 flex flex-col gap-6" style={{ overflow: "visible" }}>
             {/* Score Breakdown */}
             <motion.div {...fadeUp(0.15)} className="glass-card px-4 py-3.5">
               <div className="flex items-center justify-between mb-1">
@@ -527,21 +615,22 @@ export default function DashboardPage() {
             </motion.div>
 
             {/* Skill Trends Over Time */}
-            <motion.div {...fadeUp(0.25)} className="glass-card p-5">
+            <motion.div {...fadeUp(0.25)} className="glass-card p-5" style={{ overflow: "visible" }}>
               <div className="flex items-center gap-2 mb-4">
                 <TrendingUp size={14} className="text-indigo-400" />
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Skill Trends</h3>
               </div>
-              <div className="h-52">
-                  <ResponsiveContainer width="100%" height="100%">
+              <div className="h-52" style={{ overflow: "visible" }}>
+                  <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                     <LineChart data={chartData} margin={{ top: 5, right: 15, bottom: 5, left: -10 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                       <XAxis
-                        dataKey="date"
+                        dataKey="index"
                         stroke="#64748b"
                         fontSize={11}
                         tickLine={false}
                         axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
+                        tickFormatter={(idx: number) => chartData[idx]?.date ?? ""}
                       />
                       <YAxis
                         stroke="#64748b"
@@ -551,14 +640,19 @@ export default function DashboardPage() {
                         domain={[0, 100]}
                       />
                       <Tooltip
+                        wrapperStyle={{ zIndex: 1000, pointerEvents: "none" }}
+                        allowEscapeViewBox={{ x: true, y: true }}
                         contentStyle={{
                           background: "rgba(15, 23, 42, 0.95)",
                           border: "1px solid rgba(255,255,255,0.1)",
                           borderRadius: "0.75rem",
                           boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
                           fontSize: 11,
+                          pointerEvents: "none",
                         }}
                         labelStyle={{ color: "#94a3b8", fontSize: 11 }}
+                        labelFormatter={(idx: number) => chartData[idx]?.date ?? ""}
+                        cursor={{ stroke: "rgba(255,255,255,0.15)", strokeWidth: 1 }}
                       />
                       <Legend
                         iconSize={8}
@@ -596,7 +690,9 @@ export default function DashboardPage() {
               {recentSessions.map((session) => {
                 const isSelected = session.id === selectedSessionId;
                 const scoreColor =
-                  session.overallScore >= 80
+                  session.isDemo
+                    ? "text-cyan-300 bg-cyan-500/10 border-cyan-400/20"
+                    : session.overallScore >= 80
                     ? "text-emerald-400 bg-emerald-500/10 border-emerald-400/20"
                     : session.overallScore >= 65
                       ? "text-amber-400 bg-amber-500/10 border-amber-400/20"
@@ -624,6 +720,11 @@ export default function DashboardPage() {
                             }`}>
                               {session.examType.toUpperCase()}
                             </span>
+                            {session.isDemo && (
+                              <span className="text-[9px] font-semibold px-1.5 py-px rounded-full border bg-cyan-500/15 text-cyan-300 border-cyan-400/20">
+                                DEMO
+                              </span>
+                            )}
                             <span className="text-[11px] text-slate-500 font-medium">Level {session.level}</span>
                             <span className="text-slate-600 text-[10px]">·</span>
                             <div className="flex gap-1 flex-wrap">
@@ -663,7 +764,7 @@ export default function DashboardPage() {
                         </div>
                       </div>
                       <span className={`rounded-md border px-2.5 py-0.5 text-xs font-bold shrink-0 ${scoreColor}`}>
-                        {session.overallScore}
+                        {session.isDemo ? "Demo" : session.overallScore}
                       </span>
                     </div>
                   </div>
@@ -723,7 +824,7 @@ export default function DashboardPage() {
 
             {/* Skill radar mini */}
             <div className="h-40 -mx-2">
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                 <RadarChart data={radarData} outerRadius="70%">
                   <PolarGrid stroke="rgba(255,255,255,0.08)" />
                   <PolarAngleAxis dataKey="skill" tick={{ fontSize: 10, fill: "#94a3b8" }} />
@@ -741,7 +842,9 @@ export default function DashboardPage() {
               <h3 className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Common Mistakes</h3>
             </div>
             <div className="space-y-2">
-              {commonMistakes.map((m, i) => {
+              {commonMistakes.length === 0 ? (
+                <p className="text-[11px] text-slate-500 italic py-3">Complete more sessions to identify patterns.</p>
+              ) : commonMistakes.map((m, i) => {
                 const sevColor =
                   m.severity === "high"
                     ? "text-rose-400 bg-rose-500/10 border-rose-400/20"
@@ -775,7 +878,7 @@ export default function DashboardPage() {
               <h3 className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Performance by Exam Part</h3>
             </div>
             <div className="h-44">
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                 <BarChart data={partData} margin={{ top: 5, right: 10, bottom: 5, left: -15 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                   <XAxis dataKey="part" stroke="#64748b" fontSize={11} tickLine={false} />
@@ -935,112 +1038,120 @@ export default function DashboardPage() {
       </div>
 
       {/* Transcript / Review Modal */}
-      <AnimatePresence>
-        {modalContent && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm"
-            onClick={() => setModalContent(null)}
-          >
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              transition={{ duration: 0.2 }}
-              onClick={(e) => e.stopPropagation()}
-              className="glass-card p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto border border-white/[0.1]"
-            >
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold text-white">
-                  {modalContent.type === "transcript" ? "Session Transcript" : "AI Review"}
-                </h3>
-                <button
-                  onClick={() => setModalContent(null)}
-                  className="text-slate-400 hover:text-white transition-colors p-1 rounded-lg hover:bg-white/[0.06]"
+      {typeof document !== "undefined" &&
+        createPortal(
+          <AnimatePresence>
+            {modalContent && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm overflow-hidden"
+                onClick={() => setModalContent(null)}
+              >
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                  transition={{ duration: 0.2 }}
+                  onClick={(e) => e.stopPropagation()}
+                  className="glass-card max-w-2xl w-full h-[80vh] max-h-[80vh] overflow-hidden border border-white/[0.1] flex flex-col"
                 >
-                  <X size={20} />
-                </button>
-              </div>
-
-              <p className="text-xs text-slate-500 mb-5">
-                {modalContent.session.fullDate} · Level {modalContent.session.level} ·
-                Parts {modalContent.session.partsCompleted.join(", ")}
-              </p>
-
-              {modalContent.type === "transcript" ? (
-                <div className="space-y-3">
-                  {modalContent.session.transcript.map((entry, i) => (
-                    <div
-                      key={i}
-                      className={`rounded-xl px-4 py-3 ${
-                        entry.speaker === "examiner"
-                          ? "bg-indigo-500/10 border border-indigo-400/15"
-                          : "bg-white/[0.04] border border-white/[0.06]"
-                      }`}
+                  <div className="flex items-center justify-between mb-4 p-6 pb-0 shrink-0">
+                    <h3 className="text-lg font-semibold text-white">
+                      {modalContent.type === "transcript" ? "Session Transcript" : "AI Review"}
+                    </h3>
+                    <button
+                      onClick={() => setModalContent(null)}
+                      className="text-slate-400 hover:text-white transition-colors p-1 rounded-lg hover:bg-white/[0.06]"
                     >
-                      <p className="text-[10px] uppercase tracking-wider font-semibold mb-1 text-slate-500">
-                        {entry.speaker === "examiner" ? "Examiner" : "You"}
-                      </p>
-                      <p className="text-sm text-slate-300 leading-relaxed">{entry.text}</p>
-                    </div>
-                  ))}
-                </div>
-              ) : modalContent.session.review === "No AI review available for this session." ? (
-                <div className="text-center py-8">
-                  <p className="text-sm text-slate-400 mb-4">No AI review was generated for this session.</p>
-                  <button
-                    onClick={async () => {
-                      if (!user) return;
-                      setRegenerating(true);
-                      try {
-                        const result = await regenerateReview(user.id, modalContent.session.id);
-                        if (result.ai_review) {
-                          // Update the session in state
-                          setSessions((prev) =>
-                            prev.map((s) =>
-                              s.id === modalContent.session.id ? { ...s, review: result.ai_review } : s
-                            )
-                          );
-                          setModalContent({
-                            ...modalContent,
-                            session: { ...modalContent.session, review: result.ai_review },
-                          });
-                        }
-                      } catch {
-                        // silently fail
-                      } finally {
-                        setRegenerating(false);
-                      }
-                    }}
-                    disabled={regenerating}
-                    className="btn-primary px-6 py-2 text-sm font-semibold text-white inline-flex items-center gap-2 disabled:opacity-50"
-                  >
-                    {regenerating ? (
-                      <>
-                        <div className="h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                        Generating...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles size={14} />
-                        Generate Review
-                      </>
-                    )}
-                  </button>
-                </div>
-              ) : (
-                <div className="bg-violet-500/10 border border-violet-400/15 rounded-xl px-5 py-4">
-                  <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-line">
-                    {modalContent.session.review}
+                      <X size={20} />
+                    </button>
+                  </div>
+
+                  <p className="text-xs text-slate-500 mb-5 px-6 shrink-0">
+                    {modalContent.session.fullDate} · Level {modalContent.session.level} ·
+                    Parts {modalContent.session.partsCompleted.join(", ")}
                   </p>
-                </div>
-              )}
-            </motion.div>
-          </motion.div>
+
+                  <div className="px-6 pb-6 overflow-y-auto flex-1 min-h-0">
+                    {modalContent.type === "transcript" ? (
+                      <div className="space-y-3">
+                        {modalContent.session.transcript.map((entry, i) => (
+                          <div
+                            key={i}
+                            className={`flex ${entry.speaker === "examiner" ? "justify-start" : "justify-end"}`}
+                          >
+                            <div
+                              className={`max-w-[85%] rounded-2xl px-4 py-3 ${
+                                entry.speaker === "examiner"
+                                  ? "bg-indigo-500/10 border border-indigo-400/15 text-slate-200"
+                                  : "bg-emerald-500/10 border border-emerald-400/15 text-slate-200"
+                              }`}
+                            >
+                              <p className="text-[10px] uppercase tracking-wider font-semibold mb-1 text-slate-500">
+                                {entry.speaker === "examiner" ? "Examiner" : "You"}
+                              </p>
+                              <p className="text-sm leading-relaxed">{entry.text}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : modalContent.session.review === "No AI review available for this session." ? (
+                      <div className="text-center py-8">
+                        <p className="text-sm text-slate-400 mb-4">No AI review was generated for this session.</p>
+                        <button
+                          onClick={async () => {
+                            if (!user) return;
+                            setRegenerating(true);
+                            try {
+                              const result = await regenerateReview(user.id, modalContent.session.id);
+                              if (result.ai_review) {
+                                // Update the session in state
+                                setSessions((prev) =>
+                                  prev.map((s) =>
+                                    s.id === modalContent.session.id ? { ...s, review: result.ai_review } : s
+                                  )
+                                );
+                                setModalContent({
+                                  ...modalContent,
+                                  session: { ...modalContent.session, review: result.ai_review },
+                                });
+                              }
+                            } catch {
+                              // silently fail
+                            } finally {
+                              setRegenerating(false);
+                            }
+                          }}
+                          disabled={regenerating}
+                          className="btn-primary px-6 py-2 text-sm font-semibold text-white inline-flex items-center gap-2 disabled:opacity-50"
+                        >
+                          {regenerating ? (
+                            <>
+                              <div className="h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                              Generating...
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles size={14} />
+                              Generate Review
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="bg-violet-500/10 border border-violet-400/15 rounded-xl px-5 py-4">
+                        <ReviewMarkdown content={modalContent.session.review} />
+                      </div>
+                    )}
+                  </div>
+                </motion.div>
+              </motion.div>
+            )}
+          </AnimatePresence>,
+          document.body
         )}
-      </AnimatePresence>
     </div>
   );
 }

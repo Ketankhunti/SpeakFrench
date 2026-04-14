@@ -1,24 +1,43 @@
-import json
 import io
-import azure.cognitiveservices.speech as speechsdk
-from pydub import AudioSegment
+import subprocess
 import imageio_ffmpeg
+import azure.cognitiveservices.speech as speechsdk
 from app.core.config import settings
 
-# Point pydub to the bundled ffmpeg
-AudioSegment.converter = imageio_ffmpeg.get_ffmpeg_exe()
-AudioSegment.ffprobe = imageio_ffmpeg.get_ffmpeg_exe()
+_ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
 
 
 def _convert_to_wav(audio_data: bytes) -> bytes:
-    """Convert any audio format (WebM/Opus, MP3, etc.) to 16kHz mono WAV for Azure STT."""
+    """Convert browser WebM/Opus audio to 16kHz mono WAV for Azure STT."""
     try:
-        # Explicitly specify webm format so pydub doesn't need ffprobe to detect it
-        audio = AudioSegment.from_file(io.BytesIO(audio_data), format="webm")
-        audio = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
-        wav_buffer = io.BytesIO()
-        audio.export(wav_buffer, format="wav")
-        return wav_buffer.getvalue()
+        # Use ffmpeg directly to avoid runtime ffprobe/ffmpeg discovery issues.
+        proc = subprocess.run(
+            [
+                _ffmpeg_path,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "webm",
+                "-i",
+                "pipe:0",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-f",
+                "wav",
+                "pipe:1",
+            ],
+            input=audio_data,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if proc.returncode != 0:
+            stderr = proc.stderr.decode("utf-8", errors="replace").strip()
+            raise ValueError(stderr or f"ffmpeg exited with code {proc.returncode}")
+        return proc.stdout
     except Exception as e:
         raise ValueError(f"Audio conversion failed: {e}")
 

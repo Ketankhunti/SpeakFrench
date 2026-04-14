@@ -1,17 +1,45 @@
 "use client";
 
-import { Suspense } from "react";
-import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
+import { useAuth } from "@/hooks/useAuth";
+import { fetchDemoStatus } from "@/lib/api";
 import PricingCards from "@/components/PricingCards";
 
 function PricingContent() {
+  const router = useRouter();
   const searchParams = useSearchParams();
+  const { user } = useAuth(false);
   const success = searchParams.get("success");
   const canceled = searchParams.get("canceled");
+  const [demoUsed, setDemoUsed] = useState(false);
+  const [demoMessage, setDemoMessage] = useState<string | null>(null);
 
-  // TODO: Replace with actual user ID from Supabase auth
-  const userId = "demo-user";
+  const userId = user?.id;
+
+  useEffect(() => {
+    if (!user?.id) {
+      setDemoUsed(false);
+      return;
+    }
+    fetchDemoStatus(user.id)
+      .then((res) => {
+        setDemoUsed(Boolean(res.demo_used));
+      })
+      .catch(() => {
+        setDemoUsed(false);
+      });
+  }, [user?.id]);
+
+  const handleStartDemo = () => {
+    if (demoUsed) {
+      setDemoMessage("Demo already consumed. Please purchase a session pack to continue.");
+      return;
+    }
+    setDemoMessage(null);
+    router.push("/session?demo=true");
+  };
 
   return (
     <div className="min-h-screen bg-[var(--background)] relative noise-overlay">
@@ -68,12 +96,17 @@ function PricingContent() {
           <p className="mb-4 text-slate-400">
             Start with a free 3-4 minute demo (Part 1 only).
           </p>
-          <Link
-            href="/session?demo=true"
-            className="btn-secondary inline-flex items-center gap-2 px-6 py-3"
+          {demoMessage && (
+            <div className="mb-4 rounded-xl border border-rose-400/20 bg-rose-500/10 p-3 text-sm text-rose-300">
+              {demoMessage}
+            </div>
+          )}
+          <button
+            onClick={handleStartDemo}
+            className={`inline-flex items-center gap-2 px-6 py-3 ${demoUsed ? "opacity-70" : ""} btn-secondary`}
           >
-            Start Free Demo
-          </Link>
+            {demoUsed ? "Demo Used" : "Start Free Demo"}
+          </button>
         </div>
       </div>
     </div>

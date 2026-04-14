@@ -15,14 +15,14 @@ async def get_dashboard(user_id: str):
     try:
         history_res = (
             supabase.table("session_history")
-            .select("id, exam_type, exam_part, level, duration_seconds, pronunciation_score, grammar_score, vocabulary_score, coherence_score, transcript, ai_review, created_at")
+            .select("id, exam_type, exam_part, level, is_demo, duration_seconds, pronunciation_score, grammar_score, vocabulary_score, coherence_score, corrections, transcript, ai_review, created_at")
             .eq("user_id", user_id)
             .order("created_at", desc=True)
             .limit(50)
             .execute()
         )
     except Exception:
-        # Fallback if exam_type column doesn't exist yet
+        # Fallback if new columns don't exist yet
         history_res = (
             supabase.table("session_history")
             .select("id, exam_part, level, duration_seconds, pronunciation_score, grammar_score, vocabulary_score, coherence_score, transcript, ai_review, created_at")
@@ -47,6 +47,9 @@ async def get_dashboard(user_id: str):
     session_list = []
     practice_dates = set()
     total_score = 0
+    paid_count = 0
+    demo_count = 0
+    best_score = 0
 
     for row in sessions:
         p = float(row.get("pronunciation_score") or 0)
@@ -54,11 +57,18 @@ async def get_dashboard(user_id: str):
         v = float(row.get("vocabulary_score") or 0)
         c = float(row.get("coherence_score") or 0)
         overall = round((p + g + v + c) / 4)
-        total_score += overall
+        is_demo = bool(row.get("is_demo", False))
+
+        if is_demo:
+            demo_count += 1
+        else:
+            total_score += overall
+            paid_count += 1
+            best_score = max(best_score, overall)
 
         dt = row.get("created_at", "")
         date_key = dt[:10] if dt else ""
-        if date_key:
+        if date_key and not is_demo:
             practice_dates.add(date_key)
 
         session_list.append({
@@ -66,19 +76,20 @@ async def get_dashboard(user_id: str):
             "exam_type": row.get("exam_type", "tcf"),
             "exam_part": row.get("exam_part", 1),
             "level": row.get("level", "B1"),
+            "is_demo": is_demo,
             "duration_seconds": row.get("duration_seconds", 0),
             "pronunciation_score": p,
             "grammar_score": g,
             "vocabulary_score": v,
             "coherence_score": c,
             "overall_score": overall,
+            "corrections": row.get("corrections", []),
             "transcript": row.get("transcript", []),
             "ai_review": row.get("ai_review"),
             "created_at": dt,
         })
 
-    n = len(session_list)
-    best_score = max((s["overall_score"] for s in session_list), default=0)
+    n = paid_count
     avg_score = round(total_score / n) if n > 0 else 0
 
     # Streak: consecutive unique practice days ending today or yesterday
@@ -102,6 +113,7 @@ async def get_dashboard(user_id: str):
         "sessions": session_list,
         "stats": {
             "total_sessions": n,
+            "demo_sessions": demo_count,
             "avg_score": avg_score,
             "best_score": best_score,
             "sessions_remaining": sessions_remaining,

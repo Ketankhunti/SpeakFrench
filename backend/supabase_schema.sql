@@ -73,11 +73,13 @@ CREATE TABLE session_history (
     exam_type TEXT NOT NULL DEFAULT 'tcf',
     exam_part INTEGER NOT NULL DEFAULT 1,
     level TEXT NOT NULL DEFAULT 'B1',
+    is_demo BOOLEAN DEFAULT FALSE,
     duration_seconds INTEGER DEFAULT 0,
     pronunciation_score DECIMAL(5, 1),
     grammar_score DECIMAL(5, 1),
     vocabulary_score DECIMAL(5, 1),
     coherence_score DECIMAL(5, 1),
+    corrections JSONB DEFAULT '[]',
     transcript JSONB DEFAULT '[]',
     ai_review TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()

@@ -34,6 +34,12 @@ export async function fetchBalance(userId: string) {
   return res.json();
 }
 
+export async function fetchDemoStatus(userId: string) {
+  const res = await fetch(`${API_URL}/api/session/demo-status/${userId}`);
+  if (!res.ok) throw new Error("Failed to fetch demo status");
+  return res.json();
+}
+
 // ── Profile ──
 
 export async function fetchProfile(userId: string) {

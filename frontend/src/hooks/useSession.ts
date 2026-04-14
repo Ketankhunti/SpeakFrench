@@ -54,6 +54,9 @@ export function useSession({
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  const suppressOnCloseRef = useRef(false);
+  const endingRef = useRef(false);
+  const gotServerErrorRef = useRef(false);
 
   const connect = useCallback(() => {
     if (
@@ -69,6 +72,7 @@ export function useSession({
 
     ws.onopen = () => {
       setIsConnected(true);
+      gotServerErrorRef.current = false;
       // Send session config with exam type
       ws.send(
         JSON.stringify({
@@ -85,6 +89,7 @@ export function useSession({
       const msg: SessionMessage = JSON.parse(event.data);
 
       if (msg.type === "error") {
+        gotServerErrorRef.current = true;
         onError?.(msg.message || "Unknown error");
         return;
       }
@@ -94,11 +99,19 @@ export function useSession({
 
     ws.onclose = () => {
       setIsConnected(false);
-      onClose?.();
+      if (!suppressOnCloseRef.current) {
+        onClose?.();
+      }
+      suppressOnCloseRef.current = false;
+      endingRef.current = false;
     };
 
     ws.onerror = () => {
-      onError?.("WebSocket connection error");
+      // Suppress generic WS error if we already got a specific error from the server
+      // or if the connection was never established (transient reconnect)
+      if (!gotServerErrorRef.current && !suppressOnCloseRef.current) {
+        onError?.("WebSocket connection error");
+      }
       setIsConnected(false);
     };
 
@@ -106,6 +119,14 @@ export function useSession({
   }, [userId, examType, examPart, level, isDemo, onMessage, onError, onClose]);
 
   const disconnect = useCallback(() => {
+    endingRef.current = true;
+    suppressOnCloseRef.current = true;
+
+    if (mediaRecorderRef.current?.state === "recording") {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       // Send end_session — DON'T close yet, wait for server to send summary
       wsRef.current.send(JSON.stringify({ type: "end_session" }));
@@ -119,9 +140,9 @@ export function useSession({
       }, 15000);
     } else {
       setIsConnected(false);
-      onClose?.();
+      suppressOnCloseRef.current = false;
     }
-  }, [onClose]);
+  }, []);
 
   const startRecording = useCallback(async () => {
     try {
@@ -139,13 +160,26 @@ export function useSession({
       };
 
       mediaRecorder.onstop = async () => {
+        if (endingRef.current) {
+          // Session is ending; discard captured audio and just cleanup tracks.
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
         const audioBlob = new Blob(audioChunksRef.current, {
           type: "audio/webm",
         });
-        const arrayBuffer = await audioBlob.arrayBuffer();
-        const base64Audio = btoa(
-          String.fromCharCode(...new Uint8Array(arrayBuffer))
-        );
+        // Convert blob to base64 using FileReader (avoids stack overflow with large arrays)
+        const base64Audio = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const dataUrl = reader.result as string;
+            // Strip the "data:audio/webm;base64," prefix
+            resolve(dataUrl.split(",")[1] || "");
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(audioBlob);
+        });
 
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           wsRef.current.send(
@@ -186,9 +220,27 @@ export function useSession({
     []
   );
 
+  // Force-close WS without waiting for summary (for unmount cleanup)
+  const cleanup = useCallback(() => {
+    if (wsRef.current) {
+      suppressOnCloseRef.current = true;
+      gotServerErrorRef.current = true; // suppress any onerror from this cleanup
+      wsRef.current.onclose = null; // prevent onClose callback from firing
+      wsRef.current.onerror = null; // prevent onerror from firing
+      if (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING) {
+        wsRef.current.close();
+      }
+      wsRef.current = null;
+    }
+    endingRef.current = false;
+    suppressOnCloseRef.current = false;
+    setIsConnected(false);
+  }, []);
+
   return {
     connect,
     disconnect,
+    cleanup,
     startRecording,
     stopRecording,
     changePart,

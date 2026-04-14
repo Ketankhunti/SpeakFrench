@@ -14,8 +14,10 @@ import {
   CheckCircle2,
   Clock3,
   ChevronDown,
+  RotateCcw,
 } from "lucide-react";
 import { useSession, type SessionMessage } from "@/hooks/useSession";
+import ReviewMarkdown from "@/components/ui/ReviewMarkdown";
 
 interface Message {
   role: "examiner" | "user";
@@ -54,6 +56,8 @@ export default function SessionView({
 }: SessionViewProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [hasHeardFirstPrompt, setHasHeardFirstPrompt] = useState(false);
+  const [currentPart, setCurrentPart] = useState(examPart);
   const [error, setError] = useState<string | null>(null);
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -67,9 +71,10 @@ export default function SessionView({
   const startTimeRef = useRef<number>(Date.now());
 
   const examLabel = examType === "tcf" ? "TCF" : "TEF Canada";
+  const totalParts = examType === "tcf" ? 3 : 2;
   const partLabel = examType === "tcf"
-    ? { 1: "Tache 1 - Entretien dirige", 2: "Tache 2 - Interaction", 3: "Tache 3 - Point de vue" }[examPart]
-    : { 1: "Section A - Renseignements", 2: "Section B - Argumentation" }[examPart];
+    ? { 1: "Tache 1 - Entretien dirige", 2: "Tache 2 - Interaction", 3: "Tache 3 - Point de vue" }[currentPart]
+    : { 1: "Section A - Renseignements", 2: "Section B - Argumentation" }[currentPart];
 
   const handleMessage = useCallback(
     (msg: SessionMessage) => {
@@ -77,8 +82,11 @@ export default function SessionView({
         case "examiner_audio":
         case "part_changed": {
           setIsProcessing(false);
-          setMessages((prev) => [...prev, { role: "examiner", text: msg.text || "" }]);
+          if (msg.type === "part_changed" && typeof msg.exam_part === "number") {
+            setCurrentPart(msg.exam_part);
+          }
 
+          const examinerText = msg.text || "";
           const audioData = msg.audio || "";
           if (audioData) {
             const audioBlob = new Blob(
@@ -89,8 +97,24 @@ export default function SessionView({
             const audio = new Audio(audioUrl);
             audioRef.current = audio;
             setIsPlaying(true);
-            audio.onended = () => setIsPlaying(false);
+            let flushed = false;
+            const flushMessage = () => {
+              if (flushed) return;
+              flushed = true;
+              setIsPlaying(false);
+              setHasHeardFirstPrompt(true);
+              if (examinerText) {
+                setMessages((prev) => [...prev, { role: "examiner", text: examinerText }]);
+              }
+              URL.revokeObjectURL(audioUrl);
+            };
+            audio.onended = flushMessage;
+            audio.onerror = flushMessage;
             void audio.play();
+          } else {
+            // Text-only fallback: show immediately
+            setHasHeardFirstPrompt(true);
+            setMessages((prev) => [...prev, { role: "examiner", text: examinerText }]);
           }
           break;
         }
@@ -155,6 +179,7 @@ export default function SessionView({
   const {
     connect,
     disconnect,
+    cleanup,
     startRecording,
     stopRecording,
     isConnected,
@@ -166,7 +191,13 @@ export default function SessionView({
     level,
     isDemo,
     onMessage: handleMessage,
-    onError: setError,
+    onError: (err: string) => {
+      setError(err);
+      // Auto-clear connection errors after 5s (they're often transient)
+      if (err.includes("WebSocket") || err.includes("connection")) {
+        setTimeout(() => setError((prev) => prev === err ? null : prev), 5000);
+      }
+    },
     onClose: onSessionEnd,
   });
 
@@ -175,7 +206,8 @@ export default function SessionView({
     connect();
     startTimeRef.current = Date.now();
     return () => {
-      // cleanup on unmount
+      // Force-close WebSocket on unmount so server clears active session flag
+      cleanup();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -194,17 +226,25 @@ export default function SessionView({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Keep session controls frozen while ending until summary/ended state arrives.
+  const controlsLocked = isEnding || !!sessionSummary || sessionEnded;
+  const canStartSpeaking = hasHeardFirstPrompt && !isPlaying && !isProcessing && !controlsLocked;
+
   const handleRecord = useCallback(() => {
+    if (controlsLocked) return;
     if (isRecording) {
       stopRecording();
       setIsProcessing(true);
     } else {
+      if (!canStartSpeaking) return;
       startRecording();
     }
-  }, [isRecording, startRecording, stopRecording]);
+  }, [isRecording, startRecording, stopRecording, controlsLocked, canStartSpeaking]);
 
   const handleEndSession = () => {
+    if (isEnding) return;
     setIsEnding(true);
+    setIsProcessing(false);
     disconnect();
   };
 
@@ -298,8 +338,8 @@ export default function SessionView({
               <ChevronDown size={16} className={`text-slate-500 transition-transform ${showReview ? "rotate-180" : ""}`} />
             </button>
             {showReview && (
-              <div className="mt-4 text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">
-                {sessionSummary.ai_review}
+              <div className="mt-4">
+                <ReviewMarkdown content={sessionSummary.ai_review} />
               </div>
             )}
           </div>
@@ -338,6 +378,13 @@ export default function SessionView({
         {/* Actions */}
         <div className="flex items-center justify-center gap-4">
           <button
+            onClick={() => window.location.reload()}
+            className="rounded-xl border border-white/15 px-5 py-3 text-sm font-semibold text-slate-200 hover:bg-white/[0.06] inline-flex items-center gap-2"
+          >
+            <RotateCcw size={16} />
+            Start Another Session
+          </button>
+          <button
             onClick={onSessionEnd}
             className="btn-primary px-8 py-3 font-semibold text-white inline-flex items-center gap-2"
           >
@@ -363,6 +410,9 @@ export default function SessionView({
             <p className="text-sm text-slate-400">
               {isDemo ? "Demo" : "Live"} &middot; {partLabel} &middot; Level {level}
             </p>
+            <div className="mt-1 inline-flex items-center rounded-full border border-indigo-400/20 bg-indigo-500/10 px-2.5 py-0.5 text-[11px] font-medium text-indigo-300">
+              Part {currentPart}/{totalParts}
+            </div>
           </div>
         </div>
 
@@ -396,7 +446,7 @@ export default function SessionView({
             {messages.length === 0 && isConnected && (
               <div className="rounded-xl border border-dashed border-white/10 bg-white/[0.02] p-6 text-center text-sm text-slate-500">
                 <Volume2 size={20} className="mx-auto mb-2 text-indigo-400 animate-pulse" />
-                The examiner is preparing to speak...
+                {isPlaying ? "Listen carefully..." : "The examiner is preparing to speak..."}
               </div>
             )}
 
@@ -458,15 +508,17 @@ export default function SessionView({
               </div>
             )}
 
-            {!isPlaying && !isProcessing && (
+            {!isPlaying && !isProcessing && !controlsLocked && (
               <>
                 <button
                   onClick={handleRecord}
-                  disabled={isPlaying}
+                  disabled={(!canStartSpeaking && !isRecording) || controlsLocked}
                   className={`flex items-center gap-3 rounded-2xl px-8 py-4 font-semibold text-white transition-all duration-300 ${
                     isRecording
                       ? "bg-red-500/30 border-2 border-red-400/40 text-red-300 shadow-lg shadow-red-500/20 scale-105"
-                      : "bg-gradient-to-r from-indigo-500 to-violet-500 hover:shadow-lg hover:shadow-indigo-500/25 hover:scale-105"
+                      : canStartSpeaking
+                        ? "bg-gradient-to-r from-indigo-500 to-violet-500 hover:shadow-lg hover:shadow-indigo-500/25 hover:scale-105"
+                        : "bg-white/[0.06] border border-white/10 text-slate-400 cursor-not-allowed"
                   }`}
                 >
                   {isRecording ? (
@@ -478,14 +530,16 @@ export default function SessionView({
                   ) : (
                     <>
                       <Mic size={20} />
-                      <span>Start Speaking</span>
+                      <span>{hasHeardFirstPrompt ? "Start Speaking" : "Wait For Examiner"}</span>
                     </>
                   )}
                 </button>
 
                 {!isRecording && (
                   <p className="text-xs text-slate-500">
-                    Click to record your response, click again to send.
+                    {hasHeardFirstPrompt
+                      ? "Click to record your response, click again to send."
+                      : "Please listen to the examiner's first prompt before responding."}
                   </p>
                 )}
               </>

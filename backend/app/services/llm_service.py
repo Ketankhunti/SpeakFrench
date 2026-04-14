@@ -96,9 +96,13 @@ Réponds uniquement en JSON valide."""
         temperature=0.3,
     )
 
-    import json
+    import json, re
+    raw = response.choices[0].message.content or ""
+    # Strip markdown code fences if present (```json ... ```)
+    cleaned = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+    cleaned = re.sub(r"\s*```$", "", cleaned.strip())
     try:
-        return json.loads(response.choices[0].message.content)
+        return json.loads(cleaned)
     except json.JSONDecodeError:
         return {
             "grammar_score": 0,
@@ -118,19 +122,25 @@ async def generate_session_review(transcript: list[dict], exam_type: str = "tcf"
         for m in transcript
     )
 
-    review_prompt = f"""Tu es un évaluateur expert pour l'examen {exam_label} de français.
-Voici la transcription complète d'une session d'expression orale d'un candidat niveau {level}:
+    review_prompt = f"""You are an expert assessor for the {exam_label} French speaking exam.
+Here is the full speaking-session transcript for a candidate targeting level {level}:
 
 {transcript_text}
 
-Rédige un bilan détaillé et constructif en français (200-300 mots) qui inclut:
-1. **Points forts**: Ce que le candidat fait bien
-2. **Points à améliorer**: Les faiblesses identifiées avec des exemples précis de la transcription  
-3. **Erreurs récurrentes**: Patterns d'erreurs grammaticales, lexicales ou phonétiques
-4. **Conseils personnalisés**: 3-4 conseils concrets pour s'améliorer
-5. **Niveau estimé**: Estimation du niveau CECR (A1-C2) basée sur cette performance
+Write a detailed, constructive review in English (200-300 words) using Markdown.
 
-Sois encourageant mais honnête."""
+Required sections:
+1. **Strengths**: What the candidate does well
+2. **Areas to Improve**: Weaknesses with concrete examples from the transcript
+3. **Recurring Errors**: Grammar, vocabulary, or pronunciation patterns
+4. **Personalized Advice**: 3-4 concrete improvement actions
+5. **Estimated CEFR Level**: A1-C2 estimate based on this performance
+
+Style rules:
+- Output must be in English only.
+- Be encouraging but honest.
+- Keep feedback specific and actionable.
+"""
 
     response = await client.chat.completions.create(
         model="gpt-4o-mini",
