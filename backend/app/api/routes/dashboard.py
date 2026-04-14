@@ -11,14 +11,25 @@ async def get_dashboard(user_id: str):
     supabase = get_supabase_client()
 
     # Fetch session history (last 50 for analytics depth)
-    history_res = (
-        supabase.table("session_history")
-        .select("id, exam_part, level, duration_seconds, pronunciation_score, grammar_score, vocabulary_score, coherence_score, transcript, ai_review, created_at")
-        .eq("user_id", user_id)
-        .order("created_at", desc=True)
-        .limit(50)
-        .execute()
-    )
+    try:
+        history_res = (
+            supabase.table("session_history")
+            .select("id, exam_type, exam_part, level, duration_seconds, pronunciation_score, grammar_score, vocabulary_score, coherence_score, transcript, ai_review, created_at")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .limit(50)
+            .execute()
+        )
+    except Exception:
+        # Fallback if exam_type column doesn't exist yet
+        history_res = (
+            supabase.table("session_history")
+            .select("id, exam_part, level, duration_seconds, pronunciation_score, grammar_score, vocabulary_score, coherence_score, transcript, ai_review, created_at")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .limit(50)
+            .execute()
+        )
     sessions = history_res.data or []
 
     # Session balance
@@ -51,6 +62,7 @@ async def get_dashboard(user_id: str):
 
         session_list.append({
             "id": row["id"],
+            "exam_type": row.get("exam_type", "tcf"),
             "exam_part": row.get("exam_part", 1),
             "level": row.get("level", "B1"),
             "duration_seconds": row.get("duration_seconds", 0),

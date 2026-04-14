@@ -80,11 +80,14 @@ export default function ResetPasswordPage() {
       return;
     }
 
+    // Sign out so user must log in with the new password
+    await supabase.auth.signOut();
+
     setSuccess(true);
     setLoading(false);
 
-    // Redirect to dashboard after a brief delay
-    setTimeout(() => router.push("/dashboard"), 2000);
+    // Redirect to sign-in page after a brief delay
+    setTimeout(() => router.push("/auth"), 2000);
   };
 
   return (
@@ -115,7 +118,7 @@ export default function ResetPasswordPage() {
                 <ShieldCheck size={32} />
               </div>
               <h2 className="text-xl font-bold text-white mb-2">Password Updated!</h2>
-              <p className="text-sm text-slate-400">Redirecting you to the dashboard...</p>
+              <p className="text-sm text-slate-400">Redirecting you to sign in...</p>
             </div>
           ) : !ready ? (
             <div className="text-center py-4">

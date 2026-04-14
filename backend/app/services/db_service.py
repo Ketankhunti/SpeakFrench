@@ -46,17 +46,22 @@ async def deduct_session(user_id: str) -> bool:
 async def save_session_result(user_id: str, session_data: dict) -> None:
     """Save session results and scores to database."""
     supabase = get_supabase_client()
-    supabase.table("session_history").insert(
-        {
-            "user_id": user_id,
-            "exam_part": session_data.get("exam_part", 1),
-            "level": session_data.get("level", "B1"),
-            "duration_seconds": session_data.get("duration_seconds", 0),
-            "pronunciation_score": session_data.get("pronunciation_score"),
-            "grammar_score": session_data.get("grammar_score"),
-            "vocabulary_score": session_data.get("vocabulary_score"),
-            "coherence_score": session_data.get("coherence_score"),
-            "transcript": session_data.get("transcript", []),
-            "ai_review": session_data.get("ai_review"),
-        }
-    ).execute()
+    row = {
+        "user_id": user_id,
+        "exam_type": session_data.get("exam_type", "tcf"),
+        "exam_part": session_data.get("exam_part", 1),
+        "level": session_data.get("level", "B1"),
+        "duration_seconds": session_data.get("duration_seconds", 0),
+        "pronunciation_score": session_data.get("pronunciation_score"),
+        "grammar_score": session_data.get("grammar_score"),
+        "vocabulary_score": session_data.get("vocabulary_score"),
+        "coherence_score": session_data.get("coherence_score"),
+        "transcript": session_data.get("transcript", []),
+        "ai_review": session_data.get("ai_review"),
+    }
+    try:
+        supabase.table("session_history").insert(row).execute()
+    except Exception:
+        # Fallback if exam_type column doesn't exist yet
+        row.pop("exam_type", None)
+        supabase.table("session_history").insert(row).execute()

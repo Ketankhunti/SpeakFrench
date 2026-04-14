@@ -23,10 +23,14 @@ export interface SessionMessage {
   message?: string;
   duration_seconds?: number;
   exchanges?: number;
+  ai_review?: string;
+  transcript?: { role: string; content: string }[];
+  exam_part?: number;
 }
 
 interface UseSessionOptions {
   userId: string;
+  examType?: string;
   examPart?: number;
   level?: string;
   isDemo?: boolean;
@@ -37,6 +41,7 @@ interface UseSessionOptions {
 
 export function useSession({
   userId,
+  examType = "tcf",
   examPart = 1,
   level = "B1",
   isDemo = false,
@@ -64,10 +69,11 @@ export function useSession({
 
     ws.onopen = () => {
       setIsConnected(true);
-      // Send session config
+      // Send session config with exam type
       ws.send(
         JSON.stringify({
           type: "config",
+          exam_type: examType,
           exam_part: examPart,
           level: level,
           is_demo: isDemo,
@@ -97,7 +103,7 @@ export function useSession({
     };
 
     wsRef.current = ws;
-  }, [userId, examPart, level, isDemo, onMessage, onError, onClose]);
+  }, [userId, examType, examPart, level, isDemo, onMessage, onError, onClose]);
 
   const disconnect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {

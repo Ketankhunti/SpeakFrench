@@ -70,6 +70,7 @@ CREATE TRIGGER trg_user_packs_updated_at BEFORE UPDATE ON user_packs
 CREATE TABLE session_history (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    exam_type TEXT NOT NULL DEFAULT 'tcf',
     exam_part INTEGER NOT NULL DEFAULT 1,
     level TEXT NOT NULL DEFAULT 'B1',
     duration_seconds INTEGER DEFAULT 0,

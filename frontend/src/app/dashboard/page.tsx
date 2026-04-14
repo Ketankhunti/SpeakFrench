@@ -53,6 +53,7 @@ const fadeUp = (delay = 0) => ({
 
 interface SessionData {
   id: string;
+  examType: string;
   date: string;
   fullDate: string;
   level: string;
@@ -81,6 +82,7 @@ export default function DashboardPage() {
     lastSessionDate: "—",
   });
   const [practiceDateSet, setPracticeDateSet] = useState<Set<string>>(new Set());
+  const [examFilter, setExamFilter] = useState<"tcf" | "tef">("tcf");
 
   useEffect(() => {
     if (!user) return;
@@ -101,6 +103,7 @@ export default function DashboardPage() {
           const dt = new Date(row.created_at as string);
           return {
             id: row.id as string,
+            examType: (row.exam_type as string) || "tcf",
             date: dt.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
             fullDate: dt.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
             level: (row.level as string) || "B1",
@@ -108,7 +111,12 @@ export default function DashboardPage() {
             overallScore: overall,
             scores: { pronunciation: p, grammar: g, vocabulary: v, coherence: c },
             review: (row.ai_review as string) || "No AI review available for this session.",
-            transcript: Array.isArray(row.transcript) ? row.transcript : [],
+            transcript: Array.isArray(row.transcript)
+              ? (row.transcript as { role?: string; content?: string; speaker?: string; text?: string }[]).map((t) => ({
+                  speaker: t.role === "assistant" ? "examiner" : t.speaker || "user",
+                  text: t.content || t.text || "",
+                }))
+              : [],
           };
         });
 
@@ -137,8 +145,8 @@ export default function DashboardPage() {
     void loadData();
   }, [user]);
 
-  // Use loaded sessions or empty
-  const recentSessions = sessions;
+  // Use loaded sessions, filtered by exam type
+  const recentSessions = sessions.filter((s) => s.examType === examFilter);
 
   const [selectedSessionId, setSelectedSessionId] = useState<string>("");
   const [modalContent, setModalContent] = useState<{
@@ -375,6 +383,27 @@ export default function DashboardPage() {
           </Link>
         </motion.div>
 
+        {/* Exam Type Filter */}
+        <motion.div {...fadeUp(0.08)} className="flex items-center gap-2 mb-8">
+          <span className="text-xs text-slate-500 font-medium mr-2">Exam:</span>
+          {([
+            { value: "tcf" as const, label: "TCF" },
+            { value: "tef" as const, label: "TEF" },
+          ]).map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => { setExamFilter(opt.value); setSelectedSessionId(""); }}
+              className={`px-4 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                examFilter === opt.value
+                  ? "bg-gradient-to-r from-indigo-500 to-violet-500 text-white shadow-lg shadow-indigo-500/25"
+                  : "bg-white/[0.06] text-slate-400 border border-white/[0.08] hover:bg-white/[0.1] hover:text-white"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </motion.div>
+
         {/* Stats Grid */}
         <motion.div {...fadeUp(0.1)} className="grid gap-4 grid-cols-2 md:grid-cols-3 lg:grid-cols-6 mb-8">
           {[
@@ -532,6 +561,13 @@ export default function DashboardPage() {
                         <span className="text-[11px] text-slate-500 font-medium w-14 shrink-0">{session.date}</span>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-1.5 mb-1 flex-wrap">
+                            <span className={`text-[9px] font-semibold px-1.5 py-px rounded-full border ${
+                              session.examType === "tef"
+                                ? "bg-amber-500/15 text-amber-300 border-amber-400/20"
+                                : "bg-indigo-500/15 text-indigo-300 border-indigo-400/20"
+                            }`}>
+                              {session.examType.toUpperCase()}
+                            </span>
                             <span className="text-[11px] text-slate-500 font-medium">Level {session.level}</span>
                             <span className="text-slate-600 text-[10px]">·</span>
                             <div className="flex gap-1 flex-wrap">
