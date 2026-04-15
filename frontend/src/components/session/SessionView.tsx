@@ -58,6 +58,7 @@ export default function SessionView({
   const [isPlaying, setIsPlaying] = useState(false);
   const [hasHeardFirstPrompt, setHasHeardFirstPrompt] = useState(false);
   const [currentPart, setCurrentPart] = useState(examPart);
+  const [audioNotice, setAudioNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -88,6 +89,10 @@ export default function SessionView({
 
           const examinerText = msg.text || "";
           const audioData = msg.audio || "";
+          if (msg.audio_fallback) {
+            setAudioNotice("Audio is temporarily unavailable. Showing examiner text instead.");
+            setTimeout(() => setAudioNotice(null), 4000);
+          }
           if (audioData) {
             const audioBlob = new Blob(
               [Uint8Array.from(atob(audioData), (c) => c.charCodeAt(0))],
@@ -487,6 +492,13 @@ export default function SessionView({
         {error && !isEnding && (
           <div className="mx-6 mb-2 rounded-xl bg-red-500/10 border border-red-400/20 p-3 text-sm text-red-300">
             {error}
+          </div>
+        )}
+
+        {/* Audio fallback notice */}
+        {audioNotice && !isEnding && (
+          <div className="mx-6 mb-2 rounded-xl bg-amber-500/10 border border-amber-400/20 p-3 text-sm text-amber-300">
+            {audioNotice}
           </div>
         )}
 

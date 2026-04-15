@@ -1,3 +1,4 @@
+import asyncio
 import io
 import subprocess
 import imageio_ffmpeg
@@ -51,8 +52,8 @@ def get_speech_config() -> speechsdk.SpeechConfig:
     return speech_config
 
 
-async def speech_to_text(audio_data: bytes) -> dict:
-    """Transcribe French speech audio to text using Azure STT."""
+def _speech_to_text_sync(audio_data: bytes) -> dict:
+    """Sync implementation for French speech transcription."""
     try:
         wav_data = _convert_to_wav(audio_data)
     except ValueError as e:
@@ -86,8 +87,8 @@ async def speech_to_text(audio_data: bytes) -> dict:
         return {"text": "", "success": False, "error": f"Failed: {result.reason}"}
 
 
-async def speech_to_text_with_pronunciation(audio_data: bytes, reference_text: str = "") -> dict:
-    """Transcribe and assess pronunciation of French speech."""
+def _speech_to_text_with_pronunciation_sync(audio_data: bytes, reference_text: str = "") -> dict:
+    """Sync implementation for transcription + pronunciation assessment."""
     try:
         wav_data = _convert_to_wav(audio_data)
     except ValueError as e:
@@ -130,3 +131,17 @@ async def speech_to_text_with_pronunciation(audio_data: bytes, reference_text: s
         return {"text": "", "success": False, "error": "No speech recognized"}
     else:
         return {"text": "", "success": False, "error": f"Failed: {result.reason}"}
+
+
+async def speech_to_text(audio_data: bytes) -> dict:
+    """Transcribe French speech audio to text using Azure STT."""
+    return await asyncio.to_thread(_speech_to_text_sync, audio_data)
+
+
+async def speech_to_text_with_pronunciation(audio_data: bytes, reference_text: str = "") -> dict:
+    """Transcribe and assess pronunciation of French speech."""
+    return await asyncio.to_thread(
+        _speech_to_text_with_pronunciation_sync,
+        audio_data,
+        reference_text,
+    )

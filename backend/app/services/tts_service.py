@@ -1,3 +1,4 @@
+import asyncio
 import azure.cognitiveservices.speech as speechsdk
 from app.core.config import settings
 
@@ -12,8 +13,8 @@ def get_speech_config() -> speechsdk.SpeechConfig:
     return speech_config
 
 
-async def text_to_speech(text: str) -> bytes:
-    """Convert French text to speech audio using Azure Neural TTS."""
+def _text_to_speech_sync(text: str) -> bytes:
+    """Sync implementation for French text-to-speech."""
     speech_config = get_speech_config()
     speech_config.set_speech_synthesis_output_format(
         speechsdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3
@@ -36,8 +37,8 @@ async def text_to_speech(text: str) -> bytes:
         raise RuntimeError(f"TTS failed with reason: {result.reason}")
 
 
-async def text_to_speech_ssml(text: str, rate: str = "0%") -> bytes:
-    """Convert French text to speech with SSML control for speed adjustment."""
+def _text_to_speech_ssml_sync(text: str, rate: str = "0%") -> bytes:
+    """Sync implementation for SSML text-to-speech."""
     speech_config = get_speech_config()
     speech_config.set_speech_synthesis_output_format(
         speechsdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3
@@ -68,3 +69,13 @@ async def text_to_speech_ssml(text: str, rate: str = "0%") -> bytes:
         )
     else:
         raise RuntimeError(f"TTS failed with reason: {result.reason}")
+
+
+async def text_to_speech(text: str) -> bytes:
+    """Convert French text to speech audio using Azure Neural TTS."""
+    return await asyncio.to_thread(_text_to_speech_sync, text)
+
+
+async def text_to_speech_ssml(text: str, rate: str = "0%") -> bytes:
+    """Convert French text to speech with SSML control for speed adjustment."""
+    return await asyncio.to_thread(_text_to_speech_ssml_sync, text, rate)

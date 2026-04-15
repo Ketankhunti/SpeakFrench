@@ -3,6 +3,7 @@ import json
 import time
 import asyncio
 import logging
+from typing import Awaitable, TypeVar
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.services.tts_service import text_to_speech_ssml
@@ -10,9 +11,11 @@ from app.services.stt_service import speech_to_text_with_pronunciation
 from app.services.llm_service import get_conversation_response, evaluate_response, generate_session_review
 from app.services.db_service import (
     get_user_session_balance, deduct_session, refund_session,
-    save_session_result, is_session_active, set_session_active, clear_session_active,
-    has_demo_remaining, mark_demo_consumed,
+    save_session_result, try_acquire_session_lock, release_session_lock,
+    refresh_session_lock,
+    has_demo_remaining, mark_demo_consumed, try_acquire_session_start_slot,
 )
+from app.core.config import settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -20,6 +23,37 @@ logger = logging.getLogger(__name__)
 SESSION_TIMEOUT = 20 * 60  # 20 minutes max session
 DEMO_SESSION_TIMEOUT = 4 * 60  # 4 minutes max for free demo
 IDLE_TIMEOUT = 5 * 60      # 5 minutes no activity → auto-end
+
+# Step-level timeouts to prevent hanging in dependency calls.
+STT_STEP_TIMEOUT = 20
+EVAL_STEP_TIMEOUT = 12
+LLM_STEP_TIMEOUT = 18
+TTS_STEP_TIMEOUT = 15
+REVIEW_STEP_TIMEOUT = 30
+
+# In-process concurrency guards (Phase 1). For multi-instance global limits, add Redis/token-bucket.
+STT_SEMAPHORE = asyncio.Semaphore(40)
+EVAL_SEMAPHORE = asyncio.Semaphore(60)
+LLM_SEMAPHORE = asyncio.Semaphore(50)
+TTS_SEMAPHORE = asyncio.Semaphore(40)
+
+T = TypeVar("T")
+
+
+async def _run_step(coro: Awaitable[T], timeout_s: int, semaphore: asyncio.Semaphore) -> T:
+    """Run a dependency call with timeout + bounded concurrency."""
+    async with semaphore:
+        return await asyncio.wait_for(coro, timeout=timeout_s)
+
+
+async def _session_lock_heartbeat(user_id: str, owner_token: str) -> None:
+    """Keep active-session lock alive while websocket is running."""
+    interval = max(5, int(settings.session_lock_heartbeat_seconds))
+    while True:
+        await asyncio.sleep(interval)
+        ok = refresh_session_lock(user_id, owner_token)
+        if not ok:
+            logger.warning(f"Session lock heartbeat failed for user {user_id}")
 
 
 @router.websocket("/ws/{user_id}")
@@ -36,8 +70,9 @@ async def session_websocket(websocket: WebSocket, user_id: str):
     """
     await websocket.accept()
 
-    # ── Guard: duplicate session ──
-    if is_session_active(user_id):
+    # ── Guard: duplicate session (atomic lock) ──
+    lock_owner_token = try_acquire_session_lock(user_id)
+    if not lock_owner_token:
         logger.warning(f"Duplicate session blocked for user {user_id}")
         await websocket.send_json({
             "type": "error",
@@ -45,6 +80,8 @@ async def session_websocket(websocket: WebSocket, user_id: str):
         })
         await websocket.close()
         return
+
+    heartbeat_task = asyncio.create_task(_session_lock_heartbeat(user_id, lock_owner_token))
 
     # Session state
     conversation_history: list[dict] = []
@@ -59,6 +96,15 @@ async def session_websocket(websocket: WebSocket, user_id: str):
     last_activity = time.time()
 
     try:
+        # ── Guard: rapid reconnect/start storms per user ──
+        if not try_acquire_session_start_slot(user_id):
+            logger.warning(f"Session start throttled for user {user_id}")
+            await websocket.send_json({
+                "type": "error",
+                "message": "You're starting sessions too quickly. Please wait a few seconds and try again.",
+            })
+            return
+
         # ── Config ──
         config_msg = await asyncio.wait_for(websocket.receive_json(), timeout=30)
         if config_msg.get("type") == "config":
@@ -85,8 +131,6 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                 await websocket.close()
                 return
 
-        # Mark session active (prevent duplicate tabs)
-        set_session_active(user_id)
         logger.info(
             f"Session started for user {user_id} "
             f"(mode={'demo' if is_demo else 'paid'})"
@@ -95,8 +139,12 @@ async def session_websocket(websocket: WebSocket, user_id: str):
 
         # ── Greeting ──
         try:
-            greeting = await get_conversation_response(
-                messages=[], exam_type=exam_type, exam_part=exam_part, level=level
+            greeting = await _run_step(
+                get_conversation_response(
+                    messages=[], exam_type=exam_type, exam_part=exam_part, level=level
+                ),
+                LLM_STEP_TIMEOUT,
+                LLM_SEMAPHORE,
             )
         except Exception as e:
             logger.error(f"LLM greeting failed: {e}")
@@ -109,7 +157,11 @@ async def session_websocket(websocket: WebSocket, user_id: str):
         conversation_history.append({"role": "assistant", "content": greeting})
 
         try:
-            audio_data = await text_to_speech_ssml(greeting, rate="-10%")
+            audio_data = await _run_step(
+                text_to_speech_ssml(greeting, rate="-10%"),
+                TTS_STEP_TIMEOUT,
+                TTS_SEMAPHORE,
+            )
             audio_b64 = base64.b64encode(audio_data).decode("utf-8")
         except Exception as e:
             logger.error(f"TTS greeting failed: {e}")
@@ -119,6 +171,7 @@ async def session_websocket(websocket: WebSocket, user_id: str):
         await websocket.send_json({
             "type": "examiner_audio",
             "audio": audio_b64,
+            "audio_fallback": audio_b64 == "",
             "text": greeting,
         })
 
@@ -155,7 +208,11 @@ async def session_websocket(websocket: WebSocket, user_id: str):
 
                 # ── STT ──
                 try:
-                    stt_result = await speech_to_text_with_pronunciation(audio_bytes)
+                    stt_result = await _run_step(
+                        speech_to_text_with_pronunciation(audio_bytes),
+                        STT_STEP_TIMEOUT,
+                        STT_SEMAPHORE,
+                    )
                 except Exception as e:
                     logger.error(f"STT crashed: {e}")
                     await websocket.send_json({
@@ -185,7 +242,11 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                 # ── Evaluate silently ──
                 try:
                     context = conversation_history[-2]["content"] if len(conversation_history) >= 2 else ""
-                    evaluation = await evaluate_response(user_text, context, level)
+                    evaluation = await _run_step(
+                        evaluate_response(user_text, context, level),
+                        EVAL_STEP_TIMEOUT,
+                        EVAL_SEMAPHORE,
+                    )
                     session_scores.append({
                         "pronunciation": pronunciation,
                         "evaluation": evaluation,
@@ -208,22 +269,29 @@ async def session_websocket(websocket: WebSocket, user_id: str):
 
                 # ── LLM response ──
                 try:
-                    examiner_response = await get_conversation_response(
-                        messages=conversation_history, exam_type=exam_type, exam_part=exam_part, level=level
+                    examiner_response = await _run_step(
+                        get_conversation_response(
+                            messages=conversation_history, exam_type=exam_type, exam_part=exam_part, level=level
+                        ),
+                        LLM_STEP_TIMEOUT,
+                        LLM_SEMAPHORE,
                     )
                 except Exception as e:
                     logger.error(f"LLM response failed: {e}")
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": "Examiner response failed. Ending session to protect your data.",
-                    })
-                    break
+                    examiner_response = (
+                        "Je rencontre un petit délai technique. "
+                        "Reprenons avec une nouvelle réponse, s'il vous plaît."
+                    )
 
                 conversation_history.append({"role": "assistant", "content": examiner_response})
 
                 # ── TTS ──
                 try:
-                    audio_data = await text_to_speech_ssml(examiner_response, rate="-10%")
+                    audio_data = await _run_step(
+                        text_to_speech_ssml(examiner_response, rate="-10%"),
+                        TTS_STEP_TIMEOUT,
+                        TTS_SEMAPHORE,
+                    )
                     audio_b64 = base64.b64encode(audio_data).decode("utf-8")
                 except Exception as e:
                     logger.error(f"TTS failed: {e}")
@@ -232,6 +300,7 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                 await websocket.send_json({
                     "type": "examiner_audio",
                     "audio": audio_b64,
+                    "audio_fallback": audio_b64 == "",
                     "text": examiner_response,
                 })
 
@@ -239,11 +308,19 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                 exam_part = message.get("exam_part", exam_part)
                 conversation_history = []
                 try:
-                    greeting = await get_conversation_response(
-                        messages=[], exam_type=exam_type, exam_part=exam_part, level=level
+                    greeting = await _run_step(
+                        get_conversation_response(
+                            messages=[], exam_type=exam_type, exam_part=exam_part, level=level
+                        ),
+                        LLM_STEP_TIMEOUT,
+                        LLM_SEMAPHORE,
                     )
                     conversation_history.append({"role": "assistant", "content": greeting})
-                    audio_data = await text_to_speech_ssml(greeting, rate="-10%")
+                    audio_data = await _run_step(
+                        text_to_speech_ssml(greeting, rate="-10%"),
+                        TTS_STEP_TIMEOUT,
+                        TTS_SEMAPHORE,
+                    )
                     audio_b64 = base64.b64encode(audio_data).decode("utf-8")
                 except Exception as e:
                     logger.error(f"Part change failed: {e}")
@@ -255,6 +332,7 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                     "type": "part_changed",
                     "exam_part": exam_part,
                     "audio": audio_b64,
+                    "audio_fallback": audio_b64 == "",
                     "text": greeting,
                 })
 
@@ -264,7 +342,13 @@ async def session_websocket(websocket: WebSocket, user_id: str):
         logger.error(f"Unexpected session error for {user_id}: {e}")
     finally:
         # ── Cleanup: save results, refund if needed ──
-        clear_session_active(user_id)
+        if heartbeat_task:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+        release_session_lock(user_id, lock_owner_token)
         duration = int(time.time() - session_start)
 
         if successful_exchanges == 0:
@@ -280,60 +364,63 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                 })
             except Exception:
                 pass
-            return
+        else:
+            # ── Generate AI review (best-effort) ──
+            avg_scores = _average_scores(session_scores)
+            corrections = _collect_corrections(session_scores)
+            ai_review = None
 
-        # ── Generate AI review (best-effort) ──
-        avg_scores = _average_scores(session_scores)
-        corrections = _collect_corrections(session_scores)
-        ai_review = None
+            if is_demo:
+                try:
+                    await mark_demo_consumed(user_id)
+                except Exception as e:
+                    logger.error(f"Failed to mark demo consumed for {user_id}: {e}")
 
-        if is_demo:
+            if conversation_history:
+                try:
+                    ai_review = await _run_step(
+                        generate_session_review(
+                            conversation_history, exam_type=exam_type, level=level
+                        ),
+                        REVIEW_STEP_TIMEOUT,
+                        LLM_SEMAPHORE,
+                    )
+                except Exception as e:
+                    logger.error(f"Review generation failed for {user_id}: {e}")
+                    # Will be null — user can retry from dashboard
+
+            # ── Save session ──
             try:
-                await mark_demo_consumed(user_id)
+                await save_session_result(user_id, {
+                    "exam_type": exam_type,
+                    "exam_part": exam_part,
+                    "level": level,
+                    "is_demo": is_demo,
+                    "duration_seconds": duration,
+                    "pronunciation_score": avg_scores.get("pronunciation_score"),
+                    "grammar_score": avg_scores.get("grammar_score"),
+                    "vocabulary_score": avg_scores.get("vocabulary_score"),
+                    "coherence_score": avg_scores.get("coherence_score"),
+                    "corrections": corrections,
+                    "transcript": conversation_history,
+                    "ai_review": ai_review,
+                })
             except Exception as e:
-                logger.error(f"Failed to mark demo consumed for {user_id}: {e}")
+                logger.error(f"Failed to save session for {user_id}: {e}")
 
-        if conversation_history:
+            # ── Send summary to client ──
             try:
-                ai_review = await generate_session_review(
-                    conversation_history, exam_type=exam_type, level=level
-                )
-            except Exception as e:
-                logger.error(f"Review generation failed for {user_id}: {e}")
-                # Will be null — user can retry from dashboard
-
-        # ── Save session ──
-        try:
-            await save_session_result(user_id, {
-                "exam_type": exam_type,
-                "exam_part": exam_part,
-                "level": level,
-                "is_demo": is_demo,
-                "duration_seconds": duration,
-                "pronunciation_score": avg_scores.get("pronunciation_score"),
-                "grammar_score": avg_scores.get("grammar_score"),
-                "vocabulary_score": avg_scores.get("vocabulary_score"),
-                "coherence_score": avg_scores.get("coherence_score"),
-                "corrections": corrections,
-                "transcript": conversation_history,
-                "ai_review": ai_review,
-            })
-        except Exception as e:
-            logger.error(f"Failed to save session for {user_id}: {e}")
-
-        # ── Send summary to client ──
-        try:
-            await websocket.send_json({
-                "type": "session_summary",
-                "duration_seconds": duration,
-                "scores": avg_scores,
-                "exchanges": successful_exchanges,
-                "is_demo": is_demo,
-                "ai_review": ai_review,
-                "transcript": conversation_history,
-            })
-        except Exception:
-            pass  # Client already disconnected
+                await websocket.send_json({
+                    "type": "session_summary",
+                    "duration_seconds": duration,
+                    "scores": avg_scores,
+                    "exchanges": successful_exchanges,
+                    "is_demo": is_demo,
+                    "ai_review": ai_review,
+                    "transcript": conversation_history,
+                })
+            except Exception:
+                pass  # Client already disconnected
 
 
 @router.get("/demo-status/{user_id}")

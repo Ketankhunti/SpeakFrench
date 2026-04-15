@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
 
+    # Redis (for distributed locks/rate limits)
+    redis_url: str = "redis://localhost:6379/0"
+    redis_enabled: bool = False
+    session_lock_ttl_seconds: int = 60 * 30
+    session_lock_heartbeat_seconds: int = 15
+
     # App
     app_env: str = "development"
     cors_origins: str = "http://localhost:3000"

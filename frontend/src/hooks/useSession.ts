@@ -5,6 +5,7 @@ import { useRef, useState, useCallback } from "react";
 export interface SessionMessage {
   type: string;
   audio?: string;
+  audio_fallback?: boolean;
   text?: string;
   pronunciation?: {
     accuracy_score: number;
