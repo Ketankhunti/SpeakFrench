@@ -26,6 +26,7 @@ import {
   Crosshair,
   Gauge,
   CalendarDays,
+  Shield,
 } from "lucide-react";
 import {
   LineChart,
@@ -45,7 +46,7 @@ import {
   Bar,
 } from "recharts";
 import { useAuth } from "@/hooks/useAuth";
-import { fetchDashboard, fetchDemoStatus, regenerateReview } from "@/lib/api";
+import { fetchDashboard, fetchDemoStatus, regenerateReview, checkAdmin } from "@/lib/api";
 import ReviewMarkdown from "@/components/ui/ReviewMarkdown";
 
 const fadeUp = (delay = 0) => ({
@@ -63,7 +64,7 @@ interface SessionData {
   partsCompleted: number[];
   overallScore: number;
   scores: {
-    pronunciation: number;
+    pronunciation: number | null;
     grammar: number;
     vocabulary: number;
     coherence: number;
@@ -80,8 +81,15 @@ export default function DashboardPage() {
   const [sessionsRemaining, setSessionsRemaining] = useState(0);
   const [practiceDateSet, setPracticeDateSet] = useState<Set<string>>(new Set());
   const [demoUsed, setDemoUsed] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [examFilter, setExamFilter] = useState<"tcf" | "tef">("tcf");
   const [dateFilter, setDateFilter] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (user?.email) {
+      checkAdmin(user.email).then((r) => setIsAdmin(r.is_admin)).catch(() => {});
+    }
+  }, [user]);
 
   useEffect(() => {
     if (!user) return;
@@ -96,13 +104,21 @@ export default function DashboardPage() {
         ]);
         setDemoUsed(Boolean(demo.demo_used));
 
+        const toNumberOrNull = (value: unknown): number | null => {
+          if (value === null || value === undefined || value === "") return null;
+          const n = Number(value);
+          return Number.isFinite(n) ? n : null;
+        };
+
         // Map backend sessions to frontend SessionData
         const sessionHistory: SessionData[] = (data.sessions ?? []).map((row: Record<string, unknown>) => {
-          const p = Number(row.pronunciation_score) || 0;
+          const p = toNumberOrNull(row.pronunciation_score);
           const g = Number(row.grammar_score) || 0;
           const v = Number(row.vocabulary_score) || 0;
           const c = Number(row.coherence_score) || 0;
-          const overall = Number(row.overall_score) || Math.round((p + g + v + c) / 4);
+          const overallFromApi = toNumberOrNull(row.overall_score);
+          const overallValues = [p, g, v, c].filter((n): n is number => n !== null);
+          const overall = overallFromApi ?? (overallValues.length ? Math.round(overallValues.reduce((a, b) => a + b, 0) / overallValues.length) : 0);
           const dt = new Date(row.created_at as string);
           return {
             id: row.id as string,
@@ -259,8 +275,13 @@ export default function DashboardPage() {
 
   // Average scores across all sessions
   const n = analyticsSessions.length || 1;
+  const pronunciationValues = analyticsSessions
+    .map((s) => s.scores.pronunciation)
+    .filter((v): v is number => v !== null);
   const avgScores = {
-    pronunciation: Math.round(analyticsSessions.reduce((a, s) => a + s.scores.pronunciation, 0) / n),
+    pronunciation: pronunciationValues.length > 0
+      ? Math.round(pronunciationValues.reduce((a, b) => a + b, 0) / pronunciationValues.length)
+      : 0,
     grammar: Math.round(analyticsSessions.reduce((a, s) => a + s.scores.grammar, 0) / n),
     vocabulary: Math.round(analyticsSessions.reduce((a, s) => a + s.scores.vocabulary, 0) / n),
     coherence: Math.round(analyticsSessions.reduce((a, s) => a + s.scores.coherence, 0) / n),
@@ -333,7 +354,10 @@ export default function DashboardPage() {
               key === "grammar" ? "Grammar & Conjugation" :
               key === "vocabulary" ? "Vocabulary Breadth" :
               "Coherence & Flow",
-        frequency: analyticsSessions.filter((s) => s.scores[key as keyof typeof s.scores] < 50).length,
+        frequency: analyticsSessions.filter((s) => {
+          const score = s.scores[key as keyof typeof s.scores];
+          return typeof score === "number" && score < 50;
+        }).length,
         severity: (val < 30 ? "high" : val < 50 ? "medium" : "low") as "high" | "medium" | "low",
       }));
 
@@ -461,6 +485,12 @@ export default function DashboardPage() {
               <User size={14} />
               Profile
             </Link>
+            {isAdmin && (
+              <Link href="/admin" className="hover:text-white transition-colors duration-200 flex items-center gap-1.5 text-amber-400 hover:text-amber-300">
+                <Shield size={14} />
+                Admin
+              </Link>
+            )}
             <Link href="/session" className="btn-primary px-5 py-2.5 flex items-center gap-2 text-sm">
               <Play size={14} className="fill-current" />
               <span>Start Session</span>
@@ -590,12 +620,12 @@ export default function DashboardPage() {
                       <div className="flex-1 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
                         <motion.div
                           initial={{ width: 0 }}
-                          animate={{ width: `${item.value}%` }}
+                          animate={{ width: `${item.value ?? 0}%` }}
                           transition={{ duration: 0.8, delay: i * 0.08, ease: [0.16, 1, 0.3, 1] as const }}
                           className={`h-full rounded-full bg-gradient-to-r ${item.color}`}
                         />
                       </div>
-                      <span className="text-[11px] font-semibold text-white w-8 text-right">{item.value}%</span>
+                      <span className="text-[11px] font-semibold text-white w-16 text-right">{item.value === null ? "N/A" : `${item.value}/100`}</span>
                     </div>
                   ))}
                 </motion.div>

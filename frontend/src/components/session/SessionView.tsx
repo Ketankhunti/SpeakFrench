@@ -66,10 +66,12 @@ export default function SessionView({
   const [isProcessing, setIsProcessing] = useState(false);
   const [isEnding, setIsEnding] = useState(false);
   const [sessionEnded, setSessionEnded] = useState(false);
+  const [autoRecordTick, setAutoRecordTick] = useState(0);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const startTimeRef = useRef<number>(Date.now());
+  const lastAutoRecordTickRef = useRef(0);
 
   const examLabel = examType === "tcf" ? "TCF" : "TEF Canada";
   const totalParts = examType === "tcf" ? 3 : 2;
@@ -111,15 +113,21 @@ export default function SessionView({
               if (examinerText) {
                 setMessages((prev) => [...prev, { role: "examiner", text: examinerText }]);
               }
+              setAutoRecordTick((t) => t + 1);
               URL.revokeObjectURL(audioUrl);
             };
             audio.onended = flushMessage;
             audio.onerror = flushMessage;
-            void audio.play();
+            void audio.play().catch(() => {
+              setAudioNotice("Audio playback was blocked. Showing examiner text instead.");
+              setTimeout(() => setAudioNotice(null), 4000);
+              flushMessage();
+            });
           } else {
             // Text-only fallback: show immediately
             setHasHeardFirstPrompt(true);
             setMessages((prev) => [...prev, { role: "examiner", text: examinerText }]);
+            setAutoRecordTick((t) => t + 1);
           }
           break;
         }
@@ -217,14 +225,14 @@ export default function SessionView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Elapsed time counter
+  // Elapsed time counter — stop as soon as the session is ending/ended
   useEffect(() => {
-    if (sessionSummary) return;
+    if (sessionSummary || isEnding || sessionEnded) return;
     const timer = setInterval(() => {
       setElapsedSeconds(Math.floor((Date.now() - startTimeRef.current) / 1000));
     }, 1000);
     return () => clearInterval(timer);
-  }, [sessionSummary]);
+  }, [sessionSummary, isEnding, sessionEnded]);
 
   // Auto-scroll transcript
   useEffect(() => {
@@ -234,6 +242,48 @@ export default function SessionView({
   // Keep session controls frozen while ending until summary/ended state arrives.
   const controlsLocked = isEnding || !!sessionSummary || sessionEnded;
   const canStartSpeaking = hasHeardFirstPrompt && !isPlaying && !isProcessing && !controlsLocked;
+
+  // Auto-arm mic after examiner finishes speaking so user only needs to press Stop & Send.
+  useEffect(() => {
+    if (autoRecordTick === 0 || autoRecordTick === lastAutoRecordTickRef.current) return;
+    if (!hasHeardFirstPrompt || isPlaying || isProcessing || controlsLocked || isRecording) return;
+    lastAutoRecordTickRef.current = autoRecordTick;
+    startRecording();
+  }, [
+    autoRecordTick,
+    hasHeardFirstPrompt,
+    isPlaying,
+    isProcessing,
+    controlsLocked,
+    isRecording,
+    startRecording,
+  ]);
+
+  const endSessionGracefully = useCallback(() => {
+    if (isEnding || sessionEnded || sessionSummary) return;
+    setIsEnding(true);
+    setIsProcessing(false);
+    disconnect();
+  }, [disconnect, isEnding, sessionEnded, sessionSummary]);
+
+  // Auto-end on tab close, refresh, or browser back.
+  useEffect(() => {
+    if (sessionEnded || sessionSummary) return;
+
+    const handlePageExit = () => {
+      endSessionGracefully();
+    };
+
+    window.addEventListener("beforeunload", handlePageExit);
+    window.addEventListener("pagehide", handlePageExit);
+    window.addEventListener("popstate", handlePageExit);
+
+    return () => {
+      window.removeEventListener("beforeunload", handlePageExit);
+      window.removeEventListener("pagehide", handlePageExit);
+      window.removeEventListener("popstate", handlePageExit);
+    };
+  }, [endSessionGracefully, sessionEnded, sessionSummary]);
 
   const handleRecord = useCallback(() => {
     if (controlsLocked) return;
@@ -247,10 +297,7 @@ export default function SessionView({
   }, [isRecording, startRecording, stopRecording, controlsLocked, canStartSpeaking]);
 
   const handleEndSession = () => {
-    if (isEnding) return;
-    setIsEnding(true);
-    setIsProcessing(false);
-    disconnect();
+    endSessionGracefully();
   };
 
   const formatTime = (seconds: number) => {
@@ -485,6 +532,14 @@ export default function SessionView({
           <div className="mx-6 mb-2 rounded-xl bg-indigo-500/10 border border-indigo-400/20 p-4 text-center">
             <div className="h-2 w-2 animate-pulse rounded-full bg-indigo-400 mx-auto mb-2" />
             <span className="text-sm text-indigo-300">Ending session &amp; generating your review...</span>
+            <div className="mt-3">
+              <button
+                onClick={() => onSessionEnd?.()}
+                className="rounded-lg border border-white/15 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/[0.06]"
+              >
+                Go to Dashboard
+              </button>
+            </div>
           </div>
         )}
 
@@ -550,7 +605,7 @@ export default function SessionView({
                 {!isRecording && (
                   <p className="text-xs text-slate-500">
                     {hasHeardFirstPrompt
-                      ? "Click to record your response, click again to send."
+                      ? "Recording auto-starts after the examiner. Press Stop & Send when you finish speaking."
                       : "Please listen to the examiner's first prompt before responding."}
                   </p>
                 )}

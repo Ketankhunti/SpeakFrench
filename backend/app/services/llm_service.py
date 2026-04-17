@@ -147,6 +147,88 @@ Style rules:
         messages=[{"role": "user", "content": review_prompt}],
         max_tokens=600,
         temperature=0.4,
+        timeout=90,
     )
 
     return response.choices[0].message.content
+
+
+async def generate_session_scores(transcript: list[dict], level: str = "B1") -> dict:
+    """Generate aggregate text-based session scores and corrections from transcript."""
+    transcript_text = "\n".join(
+        f"{'Examiner' if m.get('role') == 'assistant' else 'Candidate'}: {m.get('content', '')}"
+        for m in transcript
+        if isinstance(m, dict)
+    )
+
+    scoring_prompt = f"""You are an expert French-speaking examiner.
+Evaluate this full transcript for a level-{level} candidate.
+
+Transcript:
+{transcript_text}
+
+Return ONLY valid JSON with this exact shape:
+{{
+  "grammar_score": number (0-100),
+  "vocabulary_score": number (0-100),
+  "coherence_score": number (0-100),
+  "corrections": [
+    {{"text": "specific correction"}},
+    {{"feedback": "short actionable advice"}}
+  ]
+}}
+
+Rules:
+- No markdown, no code fences.
+- Keep corrections concise and specific.
+- If unsure, still provide best estimate scores.
+"""
+
+    response = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": scoring_prompt}],
+        max_tokens=450,
+        temperature=0.2,
+        timeout=90,
+    )
+
+    import json, re
+
+    raw = response.choices[0].message.content or ""
+    cleaned = re.sub(r"^```(?:json)?\s*", "", raw.strip())
+    cleaned = re.sub(r"\s*```$", "", cleaned.strip())
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return {
+            "grammar_score": None,
+            "vocabulary_score": None,
+            "coherence_score": None,
+            "corrections": [],
+        }
+
+    def _norm_score(value):
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            return None
+        return max(0.0, min(100.0, round(num, 1)))
+
+    corrections = parsed.get("corrections") or []
+    if not isinstance(corrections, list):
+        corrections = []
+
+    normalized_corrections = []
+    for item in corrections:
+        if isinstance(item, str):
+            normalized_corrections.append({"text": item})
+        elif isinstance(item, dict):
+            normalized_corrections.append(item)
+
+    return {
+        "grammar_score": _norm_score(parsed.get("grammar_score")),
+        "vocabulary_score": _norm_score(parsed.get("vocabulary_score")),
+        "coherence_score": _norm_score(parsed.get("coherence_score")),
+        "corrections": normalized_corrections,
+    }

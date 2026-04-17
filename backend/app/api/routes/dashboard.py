@@ -1,9 +1,26 @@
 from fastapi import APIRouter, HTTPException
+from openai import APIConnectionError, APITimeoutError
 
 from app.services.db_service import get_supabase_client
-from app.services.llm_service import generate_session_review
+from app.services.llm_service import generate_session_review, generate_session_scores
 
 router = APIRouter()
+
+
+def _to_optional_float(value):
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _overall_from_scores(*scores: float | None) -> int:
+    available = [s for s in scores if s is not None]
+    if not available:
+        return 0
+    return round(sum(available) / len(available))
 
 
 @router.get("/{user_id}")
@@ -52,11 +69,11 @@ async def get_dashboard(user_id: str):
     best_score = 0
 
     for row in sessions:
-        p = float(row.get("pronunciation_score") or 0)
-        g = float(row.get("grammar_score") or 0)
-        v = float(row.get("vocabulary_score") or 0)
-        c = float(row.get("coherence_score") or 0)
-        overall = round((p + g + v + c) / 4)
+        p = _to_optional_float(row.get("pronunciation_score"))
+        g = _to_optional_float(row.get("grammar_score"))
+        v = _to_optional_float(row.get("vocabulary_score"))
+        c = _to_optional_float(row.get("coherence_score"))
+        overall = _overall_from_scores(p, g, v, c)
         is_demo = bool(row.get("is_demo", False))
 
         if is_demo:
@@ -126,13 +143,13 @@ async def get_dashboard(user_id: str):
 
 @router.post("/{user_id}/session/{session_id}/regenerate-review")
 async def regenerate_review(user_id: str, session_id: str):
-    """Regenerate AI review for a session that has a transcript but no review."""
+    """Regenerate AI review and recompute text-based scores from transcript."""
     supabase = get_supabase_client()
 
     # Fetch the session
     result = (
         supabase.table("session_history")
-        .select("id, transcript, ai_review, level")
+        .select("id, transcript, ai_review, level, exam_type")
         .eq("id", session_id)
         .eq("user_id", user_id)
         .single()
@@ -148,21 +165,48 @@ async def regenerate_review(user_id: str, session_id: str):
     if not transcript:
         raise HTTPException(status_code=400, detail="No transcript available to generate review")
 
-    # If review already exists, return it (no need to regenerate)
-    if session.get("ai_review"):
-        return {"ai_review": session["ai_review"], "regenerated": False}
+    exam_type = session.get("exam_type") or "tcf"
+    level = session.get("level") or "B1"
+
+    # Recompute text-based scores/corrections in one LLM call for reliability.
+    try:
+        score_data = await generate_session_scores(transcript, level=level)
+    except (APITimeoutError, APIConnectionError):
+        raise HTTPException(
+            status_code=504,
+            detail="Score recalculation timed out. Please retry in a few seconds.",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Score recalculation failed: {str(e)}")
 
     # Generate review from transcript
     try:
-        exam_type = "tcf"  # Default; could be stored on session
-        level = session.get("level", "B1")
         ai_review = await generate_session_review(transcript, exam_type=exam_type, level=level)
+    except (APITimeoutError, APIConnectionError):
+        raise HTTPException(
+            status_code=504,
+            detail="Review generation timed out. Please retry in a few seconds.",
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Review generation failed: {str(e)}")
 
-    # Save the generated review
-    supabase.table("session_history").update(
-        {"ai_review": ai_review}
-    ).eq("id", session_id).execute()
+    # Save regenerated review and updated text-based scores together.
+    payload = {
+        "ai_review": ai_review,
+        "grammar_score": score_data.get("grammar_score"),
+        "vocabulary_score": score_data.get("vocabulary_score"),
+        "coherence_score": score_data.get("coherence_score"),
+        "corrections": score_data.get("corrections", []),
+    }
+    supabase.table("session_history").update(payload).eq("id", session_id).execute()
 
-    return {"ai_review": ai_review, "regenerated": True}
+    return {
+        "ai_review": ai_review,
+        "scores": {
+            "grammar_score": payload["grammar_score"],
+            "vocabulary_score": payload["vocabulary_score"],
+            "coherence_score": payload["coherence_score"],
+        },
+        "corrections": payload["corrections"],
+        "regenerated": True,
+    }

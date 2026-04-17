@@ -96,3 +96,25 @@ export async function regenerateReview(userId: string, sessionId: string) {
   if (!res.ok) throw new Error("Failed to regenerate review");
   return res.json();
 }
+
+// ── Admin ──
+
+export async function checkAdmin(email: string): Promise<{ is_admin: boolean }> {
+  const res = await fetch(`${API_URL}/admin/check?email=${encodeURIComponent(email)}`);
+  if (!res.ok) return { is_admin: false };
+  return res.json();
+}
+
+export async function fetchMetrics(email: string) {
+  const res = await fetch(`${API_URL}/metrics?email=${encodeURIComponent(email)}`);
+  if (!res.ok) throw new Error("Not authorized or failed to fetch metrics");
+  return res.json();
+}
+
+export async function resetMetrics(email: string) {
+  const res = await fetch(`${API_URL}/metrics/reset?email=${encodeURIComponent(email)}`, {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error("Not authorized or failed to reset metrics");
+  return res.json();
+}

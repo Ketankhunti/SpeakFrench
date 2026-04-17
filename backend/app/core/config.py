@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     session_lock_ttl_seconds: int = 60 * 30
     session_lock_heartbeat_seconds: int = 15
 
+    # Admin
+    admin_email: str = ""
+
     # App
     app_env: str = "development"
     cors_origins: str = "http://localhost:3000"

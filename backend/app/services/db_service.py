@@ -133,7 +133,9 @@ def try_acquire_session_lock(user_id: str) -> str | None:
 def refresh_session_lock(user_id: str, owner_token: str) -> bool:
     """Refresh lock TTL if caller still owns lock.
 
-    Returns True if refreshed.
+    Returns True if refreshed. On transient Redis errors we return True to
+    avoid false-positive heartbeat failures — real ownership loss will surface
+    via lock-key mismatch on next successful call.
     """
     r = _get_redis_client()
     if r is not None:
@@ -147,7 +149,8 @@ def refresh_session_lock(user_id: str, owner_token: str) -> bool:
             )
             return bool(result)
         except RedisError:
-            return False
+            # Transient Redis error — don't flag as heartbeat failure.
+            return True
 
     # In-memory fallback has no TTL; lock remains until clear.
     return user_id in _active_sessions

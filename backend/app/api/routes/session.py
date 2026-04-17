@@ -16,6 +16,7 @@ from app.services.db_service import (
     has_demo_remaining, mark_demo_consumed, try_acquire_session_start_slot,
 )
 from app.core.config import settings
+from app.services.metrics import inc as metrics_inc
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -53,6 +54,7 @@ async def _session_lock_heartbeat(user_id: str, owner_token: str) -> None:
         await asyncio.sleep(interval)
         ok = refresh_session_lock(user_id, owner_token)
         if not ok:
+            metrics_inc("lock_heartbeat_failed")
             logger.warning(f"Session lock heartbeat failed for user {user_id}")
 
 
@@ -73,6 +75,7 @@ async def session_websocket(websocket: WebSocket, user_id: str):
     # ── Guard: duplicate session (atomic lock) ──
     lock_owner_token = try_acquire_session_lock(user_id)
     if not lock_owner_token:
+        metrics_inc("lock_acquire_failed")
         logger.warning(f"Duplicate session blocked for user {user_id}")
         await websocket.send_json({
             "type": "error",
@@ -98,6 +101,7 @@ async def session_websocket(websocket: WebSocket, user_id: str):
     try:
         # ── Guard: rapid reconnect/start storms per user ──
         if not try_acquire_session_start_slot(user_id):
+            metrics_inc("session_start_throttled")
             logger.warning(f"Session start throttled for user {user_id}")
             await websocket.send_json({
                 "type": "error",
@@ -131,6 +135,7 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                 await websocket.close()
                 return
 
+        metrics_inc("sessions_started")
         logger.info(
             f"Session started for user {user_id} "
             f"(mode={'demo' if is_demo else 'paid'})"
@@ -214,6 +219,7 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                         STT_SEMAPHORE,
                     )
                 except Exception as e:
+                    metrics_inc("dependency_timeout_stt")
                     logger.error(f"STT crashed: {e}")
                     await websocket.send_json({
                         "type": "stt_error",
@@ -252,6 +258,7 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                         "evaluation": evaluation,
                     })
                 except Exception as e:
+                    metrics_inc("dependency_timeout_eval")
                     logger.error(f"Evaluation failed: {e}")
                     # Non-critical — continue without score for this exchange
 
@@ -277,6 +284,7 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                         LLM_SEMAPHORE,
                     )
                 except Exception as e:
+                    metrics_inc("dependency_timeout_llm")
                     logger.error(f"LLM response failed: {e}")
                     examiner_response = (
                         "Je rencontre un petit délai technique. "
@@ -294,6 +302,7 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                     )
                     audio_b64 = base64.b64encode(audio_data).decode("utf-8")
                 except Exception as e:
+                    metrics_inc("dependency_timeout_tts")
                     logger.error(f"TTS failed: {e}")
                     audio_b64 = ""  # Send text-only fallback
 
@@ -339,6 +348,7 @@ async def session_websocket(websocket: WebSocket, user_id: str):
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for user {user_id}")
     except Exception as e:
+        metrics_inc("sessions_errored")
         logger.error(f"Unexpected session error for {user_id}: {e}")
     finally:
         # ── Cleanup: save results, refund if needed ──
@@ -386,6 +396,7 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                         LLM_SEMAPHORE,
                     )
                 except Exception as e:
+                    metrics_inc("dependency_timeout_review")
                     logger.error(f"Review generation failed for {user_id}: {e}")
                     # Will be null — user can retry from dashboard
 
@@ -421,6 +432,8 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                 })
             except Exception:
                 pass  # Client already disconnected
+
+        metrics_inc("sessions_completed")
 
 
 @router.get("/demo-status/{user_id}")
