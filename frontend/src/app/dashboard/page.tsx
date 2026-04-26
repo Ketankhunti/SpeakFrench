@@ -71,7 +71,7 @@ interface SessionData {
   };
   corrections: { text?: string; feedback?: string }[];
   review: string;
-  transcript: { speaker: string; text: string }[];
+  transcript: { speaker: string; text: string; part?: number }[];
 }
 
 export default function DashboardPage() {
@@ -120,6 +120,23 @@ export default function DashboardPage() {
           const overallValues = [p, g, v, c].filter((n): n is number => n !== null);
           const overall = overallFromApi ?? (overallValues.length ? Math.round(overallValues.reduce((a, b) => a + b, 0) / overallValues.length) : 0);
           const dt = new Date(row.created_at as string);
+          const transcript = Array.isArray(row.transcript)
+            ? (row.transcript as { role?: string; content?: string; speaker?: string; text?: string; part?: number }[]).map((t) => ({
+                speaker: t.role === "assistant" ? "examiner" : t.speaker || "user",
+                text: t.content || t.text || "",
+                part: typeof t.part === "number" ? t.part : undefined,
+              }))
+            : [];
+          // Derive parts completed from per-entry part tags (new sessions).
+          // Older rows have no per-entry tags — we only know the last reached
+          // part, so just show that single part rather than fabricating a range.
+          const partsFromTranscript = Array.from(
+            new Set(transcript.map((t) => t.part).filter((p): p is number => typeof p === "number"))
+          ).sort((a, b) => a - b);
+          const highestPart = Number(row.exam_part) || 1;
+          const partsCompleted = partsFromTranscript.length
+            ? partsFromTranscript
+            : [highestPart];
           return {
             id: row.id as string,
             examType: (row.exam_type as string) || "tcf",
@@ -127,17 +144,12 @@ export default function DashboardPage() {
             date: dt.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
             fullDate: dt.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" }),
             level: (row.level as string) || "B1",
-            partsCompleted: [Number(row.exam_part) || 1],
+            partsCompleted,
             overallScore: overall,
             scores: { pronunciation: p, grammar: g, vocabulary: v, coherence: c },
             corrections: Array.isArray(row.corrections) ? (row.corrections as { text?: string; feedback?: string }[]) : [],
             review: (row.ai_review as string) || "No AI review available for this session.",
-            transcript: Array.isArray(row.transcript)
-              ? (row.transcript as { role?: string; content?: string; speaker?: string; text?: string }[]).map((t) => ({
-                  speaker: t.role === "assistant" ? "examiner" : t.speaker || "user",
-                  text: t.content || t.text || "",
-                }))
-              : [],
+            transcript,
           };
         });
 
@@ -757,16 +769,13 @@ export default function DashboardPage() {
                             )}
                             <span className="text-[11px] text-slate-500 font-medium">Level {session.level}</span>
                             <span className="text-slate-600 text-[10px]">·</span>
-                            <div className="flex gap-1 flex-wrap">
-                              {session.partsCompleted.map((part) => (
-                                <span
-                                  key={part}
-                                  className="text-[9px] font-semibold px-1.5 py-px rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-400/20"
-                                >
-                                  Part {part}
-                                </span>
-                              ))}
-                            </div>
+                            <span
+                              className="text-[9px] font-semibold px-1.5 py-px rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-400/20"
+                            >
+                              {session.partsCompleted.length === 1
+                                ? `Part ${session.partsCompleted[0]}`
+                                : `Parts ${session.partsCompleted.join("+")}`}
+                            </span>
                           </div>
                           <div className="flex items-center gap-2">
                             <button
@@ -1100,32 +1109,50 @@ export default function DashboardPage() {
                   </div>
 
                   <p className="text-xs text-slate-500 mb-5 px-6 shrink-0">
-                    {modalContent.session.fullDate} · Level {modalContent.session.level} ·
-                    Parts {modalContent.session.partsCompleted.join(", ")}
+                    {modalContent.session.fullDate} · Level {modalContent.session.level} ·{" "}
+                    {modalContent.session.partsCompleted.length === 1
+                      ? `Part ${modalContent.session.partsCompleted[0]}`
+                      : `Parts ${modalContent.session.partsCompleted.join("+")}`}
                   </p>
 
                   <div className="px-6 pb-6 overflow-y-auto flex-1 min-h-0">
                     {modalContent.type === "transcript" ? (
                       <div className="space-y-3">
-                        {modalContent.session.transcript.map((entry, i) => (
-                          <div
-                            key={i}
-                            className={`flex ${entry.speaker === "examiner" ? "justify-start" : "justify-end"}`}
-                          >
-                            <div
-                              className={`max-w-[85%] rounded-2xl px-4 py-3 ${
-                                entry.speaker === "examiner"
-                                  ? "bg-indigo-500/10 border border-indigo-400/15 text-slate-200"
-                                  : "bg-emerald-500/10 border border-emerald-400/15 text-slate-200"
-                              }`}
-                            >
-                              <p className="text-[10px] uppercase tracking-wider font-semibold mb-1 text-slate-500">
-                                {entry.speaker === "examiner" ? "Examiner" : "You"}
-                              </p>
-                              <p className="text-sm leading-relaxed">{entry.text}</p>
-                            </div>
-                          </div>
-                        ))}
+                        {(() => {
+                          const entries = modalContent.session.transcript;
+                          let lastPart: number | undefined = undefined;
+                          return entries.map((entry, i) => {
+                            const showDivider = entry.part !== undefined && entry.part !== lastPart;
+                            if (showDivider) lastPart = entry.part;
+                            return (
+                              <div key={i}>
+                                {showDivider && (
+                                  <div className="flex items-center gap-3 my-4">
+                                    <div className="flex-1 h-px bg-gradient-to-r from-transparent via-indigo-400/30 to-transparent" />
+                                    <span className="text-[10px] uppercase tracking-widest font-semibold text-indigo-300/80 px-2">
+                                      Part {entry.part}
+                                    </span>
+                                    <div className="flex-1 h-px bg-gradient-to-r from-transparent via-indigo-400/30 to-transparent" />
+                                  </div>
+                                )}
+                                <div className={`flex ${entry.speaker === "examiner" ? "justify-start" : "justify-end"}`}>
+                                  <div
+                                    className={`max-w-[85%] rounded-2xl px-4 py-3 ${
+                                      entry.speaker === "examiner"
+                                        ? "bg-indigo-500/10 border border-indigo-400/15 text-slate-200"
+                                        : "bg-emerald-500/10 border border-emerald-400/15 text-slate-200"
+                                    }`}
+                                  >
+                                    <p className="text-[10px] uppercase tracking-wider font-semibold mb-1 text-slate-500">
+                                      {entry.speaker === "examiner" ? "Examiner" : "You"}
+                                    </p>
+                                    <p className="text-sm leading-relaxed">{entry.text}</p>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          });
+                        })()}
                       </div>
                     ) : modalContent.session.review === "No AI review available for this session." ? (
                       <div className="text-center py-8">

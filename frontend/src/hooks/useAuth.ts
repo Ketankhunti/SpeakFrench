@@ -14,32 +14,49 @@ export function useAuth(requireAuth = true) {
       return;
     }
 
-    const getUser = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+    let mounted = true;
 
-      if (!user && requireAuth) {
+    // Read the cached session synchronously from local storage.
+    // This avoids the auth-token web lock contention that getUser()
+    // can trigger when multiple components mount in parallel
+    // (React Strict Mode double-invoke + onAuthStateChange listener).
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!mounted) return;
+      const currentUser = session?.user ?? null;
+      if (!currentUser && requireAuth) {
         router.replace("/auth");
         return;
       }
-
-      setUser(user);
+      setUser(currentUser);
       setLoading(false);
-    };
-
-    void getUser();
+    });
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-      if (!session?.user && requireAuth) {
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mounted) return;
+
+      // TOKEN_REFRESHED fires every time the tab regains focus and Supabase
+      // silently rotates the access token. The user is unchanged, so we
+      // ignore it to avoid pointless re-renders / redirect flashes.
+      if (event === "TOKEN_REFRESHED" || event === "USER_UPDATED") {
+        return;
+      }
+
+      const nextUser = session?.user ?? null;
+
+      // Avoid re-render storm when the user reference is logically the same.
+      setUser((prev) => (prev?.id === nextUser?.id ? prev : nextUser));
+
+      if (!nextUser && requireAuth) {
         router.replace("/auth");
       }
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
   }, [requireAuth, router]);
 
   return { user, loading };

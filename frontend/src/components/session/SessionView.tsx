@@ -69,8 +69,14 @@ export default function SessionView({
   const [autoRecordTick, setAutoRecordTick] = useState(0);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioQueueRef = useRef<string[]>([]);
+  const audioPlayingRef = useRef(false);
+  const currentTurnTextRef = useRef<string>("");
+  const currentTurnFinalizedRef = useRef(false);
+  const suppressAutoRecordRef = useRef(false);
+  const pendingFinalizeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const startTimeRef = useRef<number>(Date.now());
+  const startTimeRef = useRef<number>(0);
   const lastAutoRecordTickRef = useRef(0);
 
   const examLabel = examType === "tcf" ? "TCF" : "TEF Canada";
@@ -81,6 +87,114 @@ export default function SessionView({
 
   const handleMessage = useCallback(
     (msg: SessionMessage) => {
+      // ── Streaming audio chunk queue helpers ──
+      const finalizeTurn = () => {
+        if (currentTurnFinalizedRef.current) return;
+        currentTurnFinalizedRef.current = true;
+        setIsPlaying(false);
+        setHasHeardFirstPrompt(true);
+        const text = currentTurnTextRef.current.trim();
+        if (text) {
+          setMessages((prev) => [...prev, { role: "examiner", text }]);
+        }
+        currentTurnTextRef.current = "";
+        // Transition turns shouldn't trigger auto-record (the next part greeting
+        // is coming right after; we don't want the user recording into the gap).
+        if (!suppressAutoRecordRef.current) {
+          setAutoRecordTick((t) => t + 1);
+        }
+        suppressAutoRecordRef.current = false;
+      };
+
+      const playNextInQueue = () => {
+        if (audioPlayingRef.current) return;
+        const next = audioQueueRef.current.shift();
+        if (!next) {
+          // Queue drained. If server already signalled end-of-turn, finalize now.
+          if (currentTurnFinalizedRef.current) return;
+          // Otherwise stay idle; finalizeTurn() will fire when the final marker arrives.
+          return;
+        }
+        audioPlayingRef.current = true;
+        const blob = new Blob([Uint8Array.from(atob(next), (c) => c.charCodeAt(0))], {
+          type: "audio/mp3",
+        });
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        audioRef.current = audio;
+        const onDone = () => {
+          audioPlayingRef.current = false;
+          URL.revokeObjectURL(url);
+          if (audioQueueRef.current.length > 0) {
+            playNextInQueue();
+          } else if (currentTurnFinalizedRef.current === false) {
+            // Server hasn't sent final yet — wait. Otherwise drain triggers finalize.
+          }
+        };
+        audio.onended = () => {
+          onDone();
+          // If server has already sent final and queue is now empty, finalize.
+          if (audioQueueRef.current.length === 0 && currentTurnFinalizedRef.current === false) {
+            // wait for final marker
+          }
+        };
+        audio.onerror = onDone;
+        void audio.play().catch(() => {
+          setAudioNotice("Audio playback was blocked. Showing examiner text instead.");
+          setTimeout(() => setAudioNotice(null), 4000);
+          onDone();
+        });
+      };
+
+      const enqueueAudio = (audioB64: string) => {
+        if (!audioB64) return;
+        audioQueueRef.current.push(audioB64);
+        setIsPlaying(true);
+        if (!audioPlayingRef.current) playNextInQueue();
+      };
+
+      const startNewTurn = (opts: { suppressAutoRecord?: boolean } = {}) => {
+        // If the previous turn never finalized (e.g. a new leading message arrived
+        // before the queue drained), commit its accumulated text NOW so we don't
+        // lose it. Audio for the previous turn keeps draining naturally.
+        if (!currentTurnFinalizedRef.current) {
+          const pending = currentTurnTextRef.current.trim();
+          if (pending) {
+            setMessages((prev) => [...prev, { role: "examiner", text: pending }]);
+          }
+        }
+        // Cancel any stale finalize watcher from the previous turn.
+        if (pendingFinalizeIntervalRef.current) {
+          clearInterval(pendingFinalizeIntervalRef.current);
+          pendingFinalizeIntervalRef.current = null;
+        }
+        currentTurnTextRef.current = "";
+        currentTurnFinalizedRef.current = false;
+        // Stash whether this turn should auto-record once finished (transition
+        // turns should NOT auto-record — the actual part greeting comes next).
+        suppressAutoRecordRef.current = !!opts.suppressAutoRecord;
+      };
+
+      const scheduleFinalize = () => {
+        // Cancel any prior pending check; only one can be active at a time.
+        if (pendingFinalizeIntervalRef.current) {
+          clearInterval(pendingFinalizeIntervalRef.current);
+          pendingFinalizeIntervalRef.current = null;
+        }
+        const tryFinalize = (): boolean => {
+          if (audioPlayingRef.current || audioQueueRef.current.length > 0) return false;
+          finalizeTurn();
+          if (pendingFinalizeIntervalRef.current) {
+            clearInterval(pendingFinalizeIntervalRef.current);
+            pendingFinalizeIntervalRef.current = null;
+          }
+          return true;
+        };
+        if (!tryFinalize()) {
+          pendingFinalizeIntervalRef.current = setInterval(tryFinalize, 50);
+        }
+      };
+
       switch (msg.type) {
         case "examiner_audio":
         case "part_changed": {
@@ -88,46 +202,30 @@ export default function SessionView({
           if (msg.type === "part_changed" && typeof msg.exam_part === "number") {
             setCurrentPart(msg.exam_part);
           }
+          startNewTurn({ suppressAutoRecord: !!msg.is_transition });
 
-          const examinerText = msg.text || "";
-          const audioData = msg.audio || "";
           if (msg.audio_fallback) {
             setAudioNotice("Audio is temporarily unavailable. Showing examiner text instead.");
             setTimeout(() => setAudioNotice(null), 4000);
           }
-          if (audioData) {
-            const audioBlob = new Blob(
-              [Uint8Array.from(atob(audioData), (c) => c.charCodeAt(0))],
-              { type: "audio/mp3" }
-            );
-            const audioUrl = URL.createObjectURL(audioBlob);
-            const audio = new Audio(audioUrl);
-            audioRef.current = audio;
-            setIsPlaying(true);
-            let flushed = false;
-            const flushMessage = () => {
-              if (flushed) return;
-              flushed = true;
-              setIsPlaying(false);
-              setHasHeardFirstPrompt(true);
-              if (examinerText) {
-                setMessages((prev) => [...prev, { role: "examiner", text: examinerText }]);
-              }
-              setAutoRecordTick((t) => t + 1);
-              URL.revokeObjectURL(audioUrl);
-            };
-            audio.onended = flushMessage;
-            audio.onerror = flushMessage;
-            void audio.play().catch(() => {
-              setAudioNotice("Audio playback was blocked. Showing examiner text instead.");
-              setTimeout(() => setAudioNotice(null), 4000);
-              flushMessage();
-            });
-          } else {
-            // Text-only fallback: show immediately
-            setHasHeardFirstPrompt(true);
-            setMessages((prev) => [...prev, { role: "examiner", text: examinerText }]);
-            setAutoRecordTick((t) => t + 1);
+
+          currentTurnTextRef.current += msg.text || "";
+
+          if (msg.audio) {
+            enqueueAudio(msg.audio);
+          }
+
+          if (msg.final) {
+            scheduleFinalize();
+          }
+          break;
+        }
+
+        case "examiner_audio_chunk": {
+          if (msg.text) currentTurnTextRef.current += msg.text;
+          if (msg.audio) enqueueAudio(msg.audio);
+          if (msg.final) {
+            scheduleFinalize();
           }
           break;
         }
@@ -217,7 +315,8 @@ export default function SessionView({
   // Auto-connect on mount
   useEffect(() => {
     connect();
-    startTimeRef.current = Date.now();
+    // Timer starts only when the user actually hears the first prompt
+    // (see effect below). Until then, elapsedSeconds stays at 0.
     return () => {
       // Force-close WebSocket on unmount so server clears active session flag
       cleanup();
@@ -225,14 +324,22 @@ export default function SessionView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Start the elapsed-time clock once the first examiner prompt has played.
+  useEffect(() => {
+    if (hasHeardFirstPrompt && startTimeRef.current === 0) {
+      startTimeRef.current = Date.now();
+    }
+  }, [hasHeardFirstPrompt]);
+
   // Elapsed time counter — stop as soon as the session is ending/ended
   useEffect(() => {
     if (sessionSummary || isEnding || sessionEnded) return;
+    if (!hasHeardFirstPrompt) return; // don't tick while examiner is preparing
     const timer = setInterval(() => {
       setElapsedSeconds(Math.floor((Date.now() - startTimeRef.current) / 1000));
     }, 1000);
     return () => clearInterval(timer);
-  }, [sessionSummary, isEnding, sessionEnded]);
+  }, [sessionSummary, isEnding, sessionEnded, hasHeardFirstPrompt]);
 
   // Auto-scroll transcript
   useEffect(() => {

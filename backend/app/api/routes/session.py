@@ -1,5 +1,6 @@
 import base64
 import json
+import re
 import time
 import asyncio
 import logging
@@ -8,7 +9,12 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.services.tts_service import text_to_speech_ssml
 from app.services.stt_service import speech_to_text_with_pronunciation
-from app.services.llm_service import get_conversation_response, evaluate_response, generate_session_review
+from app.services.llm_service import (
+    get_conversation_response,
+    get_conversation_response_stream,
+    evaluate_response,
+    generate_session_review,
+)
 from app.services.db_service import (
     get_user_session_balance, deduct_session, refund_session,
     save_session_result, try_acquire_session_lock, release_session_lock,
@@ -21,9 +27,35 @@ from app.services.metrics import inc as metrics_inc
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-SESSION_TIMEOUT = 20 * 60  # 20 minutes max session
+SESSION_TIMEOUT = 22 * 60  # Hard safety cap (22 min) — per-part timing drives normal flow.
 DEMO_SESSION_TIMEOUT = 4 * 60  # 4 minutes max for free demo
 IDLE_TIMEOUT = 5 * 60      # 5 minutes no activity → auto-end
+
+# Per-part pacing: auto-advance to the next part when BOTH minimum exchanges AND
+# minimum elapsed time have passed (or hard maximums are exceeded). This avoids
+# advancing too quickly when STT failures consume the early turns.
+PART_CONFIG: dict[str, dict[int, dict]] = {
+    "tcf": {
+        1: {"min_seconds": 90,  "max_seconds": 4 * 60,      "min_exchanges": 4, "max_exchanges": 7,  "label": "T\u00e2che 1"},
+        2: {"min_seconds": 4 * 60, "max_seconds": 7 * 60,   "min_exchanges": 5, "max_exchanges": 9,  "label": "T\u00e2che 2"},
+        3: {"min_seconds": 4 * 60, "max_seconds": 7 * 60,   "min_exchanges": 5, "max_exchanges": 9,  "label": "T\u00e2che 3"},
+    },
+    "tef": {
+        1: {"min_seconds": 4 * 60, "max_seconds": 6 * 60,   "min_exchanges": 5, "max_exchanges": 8,  "label": "Section A"},
+        2: {"min_seconds": 7 * 60, "max_seconds": 11 * 60,  "min_exchanges": 7, "max_exchanges": 12, "label": "Section B"},
+    },
+}
+
+
+def _max_part_for(exam_type: str) -> int:
+    parts = PART_CONFIG.get(exam_type, PART_CONFIG["tcf"])
+    return max(parts.keys())
+
+
+def _part_limits(exam_type: str, exam_part: int) -> dict:
+    parts = PART_CONFIG.get(exam_type, PART_CONFIG["tcf"])
+    return parts.get(exam_part, parts[max(parts.keys())])
+
 
 # Step-level timeouts to prevent hanging in dependency calls.
 STT_STEP_TIMEOUT = 20
@@ -40,11 +72,173 @@ TTS_SEMAPHORE = asyncio.Semaphore(40)
 
 T = TypeVar("T")
 
+# Split the streaming LLM output at sentence ends OR clause-level punctuation
+# once we have enough characters. Finer cuts = lower perceived latency.
+_SPLIT_RE = re.compile(r"[.!?\u2026]+[\s\n]|[,;:][\s\n]|\n")
+_MIN_CHUNK_CHARS_FIRST = 15  # ship the very first chunk fast for low TTFA
+_MIN_CHUNK_CHARS = 30        # subsequent chunks can be slightly larger
+
 
 async def _run_step(coro: Awaitable[T], timeout_s: int, semaphore: asyncio.Semaphore) -> T:
     """Run a dependency call with timeout + bounded concurrency."""
     async with semaphore:
         return await asyncio.wait_for(coro, timeout=timeout_s)
+
+
+async def _synth_one(text: str) -> bytes:
+    """Synthesize a single chunk under the TTS semaphore + timeout."""
+    return await _run_step(
+        text_to_speech_ssml(text, rate="-10%"),
+        TTS_STEP_TIMEOUT,
+        TTS_SEMAPHORE,
+    )
+
+
+async def _synth_and_send_chunk(
+    websocket: WebSocket, message_type: str, text: str, final: bool, **extra
+) -> None:
+    """Synthesize one sentence and send it as an audio chunk over the WS.
+
+    Falls back to a text-only message on TTS failure so the client can keep up.
+    """
+    audio_b64 = ""
+    if text.strip():
+        try:
+            audio = await _synth_one(text)
+            audio_b64 = base64.b64encode(audio).decode("utf-8")
+        except Exception as e:
+            metrics_inc("dependency_timeout_tts")
+            logger.error(f"TTS chunk failed: {e}")
+
+    payload = {
+        "type": message_type,
+        "audio": audio_b64,
+        "audio_fallback": audio_b64 == "",
+        "text": text,
+        "final": final,
+    }
+    payload.update(extra)
+    await websocket.send_json(payload)
+
+
+async def _stream_examiner_reply(
+    websocket: WebSocket,
+    history: list[dict],
+    exam_type: str,
+    exam_part: int,
+    level: str,
+    message_type: str = "examiner_audio",
+    extra_first: dict | None = None,
+) -> str:
+    """Stream LLM tokens, synthesize per-sentence in parallel, and ship audio chunks in order.
+
+    Returns the full assembled examiner text (for conversation_history).
+
+    Pipeline:
+      - LLM streams text → split into chunks at punctuation boundaries.
+      - Each chunk's TTS task is scheduled immediately (parallel synthesis).
+      - We forward chunks in order to the client; chunk N is awaited while
+        chunks N+1, N+2... are already synthesizing.
+      - First chunk uses `message_type` (e.g. "examiner_audio" or "part_changed").
+      - Subsequent chunks use "examiner_audio_chunk".
+      - Final empty chunk with `final: true` signals end-of-turn.
+    """
+    full_text_parts: list[str] = []
+    chunk_texts: list[str] = []
+    chunk_tasks: list[asyncio.Task[bytes]] = []
+    buffer = ""
+
+    def _schedule(chunk_text: str) -> None:
+        chunk_texts.append(chunk_text)
+        chunk_tasks.append(asyncio.create_task(_synth_one(chunk_text)))
+
+    # ── Producer: stream LLM tokens and schedule TTS in parallel ──
+    try:
+        async with LLM_SEMAPHORE:
+            stream = get_conversation_response_stream(
+                messages=history, exam_type=exam_type, exam_part=exam_part, level=level
+            )
+            async for delta in stream:
+                buffer += delta
+                full_text_parts.append(delta)
+
+                # Flush as many chunks as possible. First chunk uses a smaller
+                # threshold so we ship audio as fast as possible.
+                while True:
+                    min_chars = _MIN_CHUNK_CHARS_FIRST if not chunk_tasks else _MIN_CHUNK_CHARS
+                    if len(buffer) < min_chars:
+                        break
+                    match = _SPLIT_RE.search(buffer)
+                    if not match:
+                        break
+                    chunk = buffer[: match.end()].strip()
+                    buffer = buffer[match.end():]
+                    if chunk:
+                        _schedule(chunk)
+    except asyncio.TimeoutError:
+        metrics_inc("dependency_timeout_llm")
+        # Cancel scheduled TTS tasks before re-raising so we don't leak work.
+        for t in chunk_tasks:
+            if not t.done():
+                t.cancel()
+        raise
+
+    # Flush trailing tail.
+    tail = buffer.strip()
+    if tail:
+        _schedule(tail)
+
+    # ── Consumer: send chunks in order. Tasks already running concurrently. ──
+    sent_first = False
+    for i, (text, task) in enumerate(zip(chunk_texts, chunk_tasks)):
+        try:
+            audio = await task
+            audio_b64 = base64.b64encode(audio).decode("utf-8")
+        except Exception as e:
+            metrics_inc("dependency_timeout_tts")
+            logger.error(f"TTS chunk {i} failed: {e}")
+            audio_b64 = ""
+
+        if not sent_first:
+            msg_type = message_type
+            extra = extra_first or {}
+            sent_first = True
+        else:
+            msg_type = "examiner_audio_chunk"
+            extra = {}
+
+        payload = {
+            "type": msg_type,
+            "audio": audio_b64,
+            "audio_fallback": audio_b64 == "",
+            "text": text,
+            "final": False,
+        }
+        payload.update(extra)
+        await websocket.send_json(payload)
+
+    # End-of-turn marker.
+    if not sent_first:
+        # LLM produced nothing — send an empty leading message so client unblocks.
+        empty_payload = {
+            "type": message_type,
+            "audio": "",
+            "audio_fallback": True,
+            "text": "",
+            "final": True,
+        }
+        empty_payload.update(extra_first or {})
+        await websocket.send_json(empty_payload)
+    else:
+        await websocket.send_json({
+            "type": "examiner_audio_chunk",
+            "audio": "",
+            "audio_fallback": False,
+            "text": "",
+            "final": True,
+        })
+
+    return "".join(full_text_parts).strip()
 
 
 async def _session_lock_heartbeat(user_id: str, owner_token: str) -> None:
@@ -87,16 +281,23 @@ async def session_websocket(websocket: WebSocket, user_id: str):
     heartbeat_task = asyncio.create_task(_session_lock_heartbeat(user_id, lock_owner_token))
 
     # Session state
-    conversation_history: list[dict] = []
+    conversation_history: list[dict] = []  # LLM context for current part only
+    full_transcript: list[dict] = []       # Cross-part transcript for storage/review
+    parts_completed: set[int] = set()
     session_start = time.time()
     exam_type = "tcf"
     exam_part = 1
     level = "B1"
     is_demo = False
     session_scores: list[dict] = []
+    # Background eval tasks: each yields (pronunciation, evaluation) when awaited.
+    pending_evals: list[asyncio.Task] = []
     credit_deducted = False
     successful_exchanges = 0
     last_activity = time.time()
+    # Per-part state (reset on each part change).
+    part_started_at = time.time()
+    part_exchanges = 0
 
     try:
         # ── Guard: rapid reconnect/start storms per user ──
@@ -141,44 +342,35 @@ async def session_websocket(websocket: WebSocket, user_id: str):
             f"(mode={'demo' if is_demo else 'paid'})"
         )
         session_timeout = DEMO_SESSION_TIMEOUT if is_demo else SESSION_TIMEOUT
+        # Reset per-part timer now that we know the actual starting part.
+        part_started_at = time.time()
+        part_exchanges = 0
 
-        # ── Greeting ──
+        # ── Greeting (streamed) ──
         try:
-            greeting = await _run_step(
-                get_conversation_response(
-                    messages=[], exam_type=exam_type, exam_part=exam_part, level=level
+            greeting = await asyncio.wait_for(
+                _stream_examiner_reply(
+                    websocket,
+                    history=[],
+                    exam_type=exam_type,
+                    exam_part=exam_part,
+                    level=level,
+                    message_type="examiner_audio",
                 ),
-                LLM_STEP_TIMEOUT,
-                LLM_SEMAPHORE,
+                timeout=LLM_STEP_TIMEOUT + TTS_STEP_TIMEOUT,
             )
         except Exception as e:
-            logger.error(f"LLM greeting failed: {e}")
+            logger.error(f"LLM greeting stream failed: {e}")
             await websocket.send_json({
                 "type": "error",
                 "message": "Failed to initialize examiner. Please try again.",
             })
             return
 
-        conversation_history.append({"role": "assistant", "content": greeting})
-
-        try:
-            audio_data = await _run_step(
-                text_to_speech_ssml(greeting, rate="-10%"),
-                TTS_STEP_TIMEOUT,
-                TTS_SEMAPHORE,
-            )
-            audio_b64 = base64.b64encode(audio_data).decode("utf-8")
-        except Exception as e:
-            logger.error(f"TTS greeting failed: {e}")
-            # Send text-only fallback
-            audio_b64 = ""
-
-        await websocket.send_json({
-            "type": "examiner_audio",
-            "audio": audio_b64,
-            "audio_fallback": audio_b64 == "",
-            "text": greeting,
-        })
+        if greeting:
+            conversation_history.append({"role": "assistant", "content": greeting})
+            full_transcript.append({"role": "assistant", "content": greeting, "part": exam_part})
+            parts_completed.add(exam_part)
 
         # ── Conversation loop ──
         while True:
@@ -244,106 +436,242 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                 })
 
                 conversation_history.append({"role": "user", "content": user_text})
+                full_transcript.append({"role": "user", "content": user_text, "part": exam_part})
+                parts_completed.add(exam_part)
 
-                # ── Evaluate silently ──
-                try:
-                    context = conversation_history[-2]["content"] if len(conversation_history) >= 2 else ""
-                    evaluation = await _run_step(
-                        evaluate_response(user_text, context, level),
-                        EVAL_STEP_TIMEOUT,
-                        EVAL_SEMAPHORE,
-                    )
-                    session_scores.append({
-                        "pronunciation": pronunciation,
-                        "evaluation": evaluation,
-                    })
-                except Exception as e:
-                    metrics_inc("dependency_timeout_eval")
-                    logger.error(f"Evaluation failed: {e}")
-                    # Non-critical — continue without score for this exchange
+                # ── Evaluate silently (fire-and-forget; gathered at session end) ──
+                # Eval result is never shown during the conversation, so we don't block
+                # the LLM/TTS reply on it. This removes ~1–2s of dead air per turn.
+                context = conversation_history[-2]["content"] if len(conversation_history) >= 2 else ""
 
-                # ── Deduct credit on first successful exchange ──
+                async def _eval_turn(
+                    text: str = user_text,
+                    ctx: str = context,
+                    pron: dict = pronunciation,
+                ) -> dict:
+                    try:
+                        evaluation = await _run_step(
+                            evaluate_response(text, ctx, level),
+                            EVAL_STEP_TIMEOUT,
+                            EVAL_SEMAPHORE,
+                        )
+                        return {"pronunciation": pron, "evaluation": evaluation}
+                    except Exception as e:
+                        metrics_inc("dependency_timeout_eval")
+                        logger.error(f"Evaluation failed: {e}")
+                        return {"pronunciation": pron, "evaluation": None}
+
+                pending_evals.append(asyncio.create_task(_eval_turn()))
+
+                # ── Deduct credit on first successful exchange (off critical path) ──
+                # We optimistically count the exchange as "deducted" immediately so
+                # the LLM/TTS reply isn't blocked by a slow Supabase round-trip
+                # (which can take several seconds on the free tier). If the actual
+                # deduction fails later, the finally-block refund logic catches it
+                # via the `credit_deducted` flag, and we already have the lock.
                 if not is_demo and not credit_deducted:
-                    credit_deducted = await deduct_session(user_id)
-                    if not credit_deducted:
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": "Failed to deduct session credit.",
-                        })
-                        break
+                    credit_deducted = True  # optimistic
+
+                    async def _do_deduct() -> None:
+                        ok = await deduct_session(user_id)
+                        if not ok:
+                            # Surface a soft warning; we don't kill the in-flight reply.
+                            logger.warning(
+                                f"Async credit deduction failed for {user_id}; "
+                                "session will continue but will not be re-charged."
+                            )
+                            try:
+                                await websocket.send_json({
+                                    "type": "error",
+                                    "message": "Warning: session credit could not be confirmed. Continuing anyway.",
+                                })
+                            except Exception:
+                                pass
+
+                    asyncio.create_task(_do_deduct())
 
                 successful_exchanges += 1
 
-                # ── LLM response ──
+                # ── LLM response + TTS (streamed sentence-by-sentence) ──
                 try:
-                    examiner_response = await _run_step(
-                        get_conversation_response(
-                            messages=conversation_history, exam_type=exam_type, exam_part=exam_part, level=level
+                    examiner_response = await asyncio.wait_for(
+                        _stream_examiner_reply(
+                            websocket,
+                            history=conversation_history,
+                            exam_type=exam_type,
+                            exam_part=exam_part,
+                            level=level,
+                            message_type="examiner_audio",
                         ),
-                        LLM_STEP_TIMEOUT,
-                        LLM_SEMAPHORE,
+                        timeout=LLM_STEP_TIMEOUT + TTS_STEP_TIMEOUT,
                     )
                 except Exception as e:
                     metrics_inc("dependency_timeout_llm")
-                    logger.error(f"LLM response failed: {e}")
+                    logger.error(f"LLM stream failed: {e}")
                     examiner_response = (
                         "Je rencontre un petit délai technique. "
                         "Reprenons avec une nouvelle réponse, s'il vous plaît."
                     )
+                    try:
+                        await _synth_and_send_chunk(
+                            websocket, "examiner_audio", examiner_response, final=False
+                        )
+                        await websocket.send_json({
+                            "type": "examiner_audio_chunk",
+                            "audio": "",
+                            "audio_fallback": False,
+                            "text": "",
+                            "final": True,
+                        })
+                    except Exception:
+                        pass
 
-                conversation_history.append({"role": "assistant", "content": examiner_response})
+                if examiner_response:
+                    conversation_history.append({"role": "assistant", "content": examiner_response})
+                    full_transcript.append({"role": "assistant", "content": examiner_response, "part": exam_part})
+                    parts_completed.add(exam_part)
 
-                # ── TTS ──
-                try:
-                    audio_data = await _run_step(
-                        text_to_speech_ssml(examiner_response, rate="-10%"),
-                        TTS_STEP_TIMEOUT,
-                        TTS_SEMAPHORE,
+                part_exchanges += 1
+
+                # ── Auto-advance to next part when limits reached ──
+                # Demo sessions stay in their starting part; only paid sessions advance.
+                if not is_demo:
+                    limits = _part_limits(exam_type, exam_part)
+                    part_elapsed = time.time() - part_started_at
+                    # Advance only if we've crossed BOTH minimums, OR hit a hard maximum.
+                    hit_min = (
+                        part_exchanges >= int(limits["min_exchanges"]) and
+                        part_elapsed >= int(limits["min_seconds"])
                     )
-                    audio_b64 = base64.b64encode(audio_data).decode("utf-8")
-                except Exception as e:
-                    metrics_inc("dependency_timeout_tts")
-                    logger.error(f"TTS failed: {e}")
-                    audio_b64 = ""  # Send text-only fallback
+                    hit_max = (
+                        part_exchanges >= int(limits["max_exchanges"]) or
+                        part_elapsed >= int(limits["max_seconds"])
+                    )
+                    should_advance = hit_min or hit_max
+                    if should_advance:
+                        next_part = exam_part + 1
+                        max_part = _max_part_for(exam_type)
+                        if next_part > max_part:
+                            # Last part finished — end session gracefully.
+                            logger.info(
+                                f"All parts completed for user {user_id} "
+                                f"(part={exam_part}, exchanges={part_exchanges}, elapsed={int(part_elapsed)}s)"
+                            )
+                            try:
+                                await websocket.send_json({
+                                    "type": "session_timeout",
+                                    "message": "Examen termin\u00e9 — toutes les parties sont compl\u00e9t\u00e9es.",
+                                })
+                            except Exception:
+                                pass
+                            break
+                        # Advance to next part: announce transition first, give
+                        # the user a brief prep moment, then stream the new
+                        # greeting. Resets per-part state for the new part.
+                        logger.info(
+                            f"Auto-advancing user {user_id} from part {exam_part} -> {next_part} "
+                            f"(exchanges={part_exchanges}, elapsed={int(part_elapsed)}s)"
+                        )
 
-                await websocket.send_json({
-                    "type": "examiner_audio",
-                    "audio": audio_b64,
-                    "audio_fallback": audio_b64 == "",
-                    "text": examiner_response,
-                })
+                        next_label = _part_limits(exam_type, next_part).get("label", f"Partie {next_part}")
+                        transition_text = (
+                            f"Tr\u00e8s bien, merci pour vos r\u00e9ponses. "
+                            f"Nous allons maintenant passer \u00e0 la {next_label}. "
+                            f"Pr\u00e9parez-vous, je vais commencer dans quelques instants."
+                        )
+                        try:
+                            await _synth_and_send_chunk(
+                                websocket,
+                                "examiner_audio",
+                                transition_text,
+                                final=False,
+                                is_transition=True,
+                            )
+                            await websocket.send_json({
+                                "type": "examiner_audio_chunk",
+                                "audio": "",
+                                "audio_fallback": False,
+                                "text": "",
+                                "final": True,
+                                "is_transition": True,
+                            })
+                        except Exception as e:
+                            logger.warning(f"Transition announcement failed for {user_id}: {e}")
+
+                        # Brief server-side prep pause (~2s) before the new part starts.
+                        await asyncio.sleep(2.0)
+
+                        exam_part = next_part
+                        conversation_history = []
+                        part_started_at = time.time()
+                        part_exchanges = 0
+                        try:
+                            new_greeting = await asyncio.wait_for(
+                                _stream_examiner_reply(
+                                    websocket,
+                                    history=[],
+                                    exam_type=exam_type,
+                                    exam_part=exam_part,
+                                    level=level,
+                                    message_type="part_changed",
+                                    extra_first={"exam_part": exam_part},
+                                ),
+                                timeout=LLM_STEP_TIMEOUT + TTS_STEP_TIMEOUT,
+                            )
+                            if new_greeting:
+                                conversation_history.append(
+                                    {"role": "assistant", "content": new_greeting}
+                                )
+                                full_transcript.append(
+                                    {"role": "assistant", "content": new_greeting, "part": exam_part}
+                                )
+                                parts_completed.add(exam_part)
+                        except Exception as e:
+                            logger.error(f"Auto part-advance greeting failed for {user_id}: {e}")
+                            await websocket.send_json({
+                                "type": "part_changed",
+                                "exam_part": exam_part,
+                                "audio": "",
+                                "audio_fallback": True,
+                                "text": "Passons \u00e0 la partie suivante.",
+                                "final": True,
+                            })
 
             elif message["type"] == "change_part":
                 exam_part = message.get("exam_part", exam_part)
                 conversation_history = []
+                # Manual part change resets per-part timers too.
+                part_started_at = time.time()
+                part_exchanges = 0
                 try:
-                    greeting = await _run_step(
-                        get_conversation_response(
-                            messages=[], exam_type=exam_type, exam_part=exam_part, level=level
+                    greeting = await asyncio.wait_for(
+                        _stream_examiner_reply(
+                            websocket,
+                            history=[],
+                            exam_type=exam_type,
+                            exam_part=exam_part,
+                            level=level,
+                            message_type="part_changed",
+                            extra_first={"exam_part": exam_part},
                         ),
-                        LLM_STEP_TIMEOUT,
-                        LLM_SEMAPHORE,
+                        timeout=LLM_STEP_TIMEOUT + TTS_STEP_TIMEOUT,
                     )
-                    conversation_history.append({"role": "assistant", "content": greeting})
-                    audio_data = await _run_step(
-                        text_to_speech_ssml(greeting, rate="-10%"),
-                        TTS_STEP_TIMEOUT,
-                        TTS_SEMAPHORE,
-                    )
-                    audio_b64 = base64.b64encode(audio_data).decode("utf-8")
+                    if greeting:
+                        conversation_history.append({"role": "assistant", "content": greeting})
+                        full_transcript.append({"role": "assistant", "content": greeting, "part": exam_part})
+                        parts_completed.add(exam_part)
                 except Exception as e:
                     logger.error(f"Part change failed: {e}")
-                    audio_b64 = ""
-                    greeting = "Passons à la partie suivante."
-                    conversation_history.append({"role": "assistant", "content": greeting})
-
-                await websocket.send_json({
-                    "type": "part_changed",
-                    "exam_part": exam_part,
-                    "audio": audio_b64,
-                    "audio_fallback": audio_b64 == "",
-                    "text": greeting,
-                })
+                    fallback = "Passons à la partie suivante."
+                    conversation_history.append({"role": "assistant", "content": fallback})
+                    await websocket.send_json({
+                        "type": "part_changed",
+                        "exam_part": exam_part,
+                        "audio": "",
+                        "audio_fallback": True,
+                        "text": fallback,
+                        "final": True,
+                    })
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for user {user_id}")
@@ -362,6 +690,10 @@ async def session_websocket(websocket: WebSocket, user_id: str):
         duration = int(time.time() - session_start)
 
         if successful_exchanges == 0:
+            # Cancel any pending eval tasks — we won't be saving them.
+            for t in pending_evals:
+                if not t.done():
+                    t.cancel()
             # No real usage → refund credit if we deducted
             if credit_deducted:
                 await refund_session(user_id)
@@ -375,6 +707,13 @@ async def session_websocket(websocket: WebSocket, user_id: str):
             except Exception:
                 pass
         else:
+            # ── Drain background eval tasks before scoring ──
+            if pending_evals:
+                eval_results = await asyncio.gather(*pending_evals, return_exceptions=True)
+                for r in eval_results:
+                    if isinstance(r, dict) and r.get("evaluation") is not None:
+                        session_scores.append(r)
+
             # ── Generate AI review (best-effort) ──
             avg_scores = _average_scores(session_scores)
             corrections = _collect_corrections(session_scores)
@@ -390,7 +729,7 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                 try:
                     ai_review = await _run_step(
                         generate_session_review(
-                            conversation_history, exam_type=exam_type, level=level
+                            full_transcript or conversation_history, exam_type=exam_type, level=level
                         ),
                         REVIEW_STEP_TIMEOUT,
                         LLM_SEMAPHORE,
@@ -402,9 +741,10 @@ async def session_websocket(websocket: WebSocket, user_id: str):
 
             # ── Save session ──
             try:
+                highest_part = max(parts_completed) if parts_completed else exam_part
                 await save_session_result(user_id, {
                     "exam_type": exam_type,
-                    "exam_part": exam_part,
+                    "exam_part": highest_part,
                     "level": level,
                     "is_demo": is_demo,
                     "duration_seconds": duration,
@@ -413,7 +753,7 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                     "vocabulary_score": avg_scores.get("vocabulary_score"),
                     "coherence_score": avg_scores.get("coherence_score"),
                     "corrections": corrections,
-                    "transcript": conversation_history,
+                    "transcript": full_transcript or conversation_history,
                     "ai_review": ai_review,
                 })
             except Exception as e:
@@ -428,7 +768,7 @@ async def session_websocket(websocket: WebSocket, user_id: str):
                     "exchanges": successful_exchanges,
                     "is_demo": is_demo,
                     "ai_review": ai_review,
-                    "transcript": conversation_history,
+                    "transcript": full_transcript or conversation_history,
                 })
             except Exception:
                 pass  # Client already disconnected

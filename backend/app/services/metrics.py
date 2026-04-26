@@ -22,6 +22,8 @@ class _Counters:
     sessions_started: int = 0
     sessions_completed: int = 0
     sessions_errored: int = 0
+    tts_cache_hit: int = 0
+    tts_cache_miss: int = 0
     started_at: float = field(default_factory=time.time)
 
 

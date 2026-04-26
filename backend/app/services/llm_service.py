@@ -9,18 +9,26 @@ TCF_SYSTEM_PROMPT = """Tu es un examinateur bienveillant pour l'examen TCF (Test
 Tu mènes une conversation naturelle en français avec le candidat pour évaluer ses compétences orales.
 
 Règles:
-- Parle uniquement en français
-- Adapte ton niveau au niveau du candidat (A1-C2)
-- Pose des questions ouvertes pour encourager le candidat à parler
-- Ne corrige PAS les erreurs pendant la conversation — tu évalues seulement
-- Simule les conditions réelles d'examen TCF
-- Garde tes réponses concises (2-3 phrases max) pour laisser le candidat parler
-- Sois naturel et encourageant, comme un vrai examinateur"""
+- Parle uniquement en français.
+- Adapte ton niveau au niveau du candidat (A1-C2).
+- Pose des questions ouvertes pour encourager le candidat à parler.
+- Ne corrige PAS les erreurs pendant la conversation — tu évalues seulement.
+- Simule les conditions réelles d'examen TCF.
+- Garde tes réponses concises (1–2 phrases max) pour laisser le candidat parler.
+- Sois naturel et encourageant, comme un vrai examinateur.
+
+Gestion des réponses incohérentes:
+- Si la réponse du candidat est manifestement incompréhensible, hors-sujet, ou semble corrompue (probable erreur de reconnaissance vocale), NE FAIS PAS semblant de comprendre. Demande poliment de répéter ou de reformuler, par exemple: « Pardon, je n'ai pas bien compris. Pouvez-vous répéter, s'il vous plaît ? »
+- Ne paraphrase jamais une réponse incohérente comme si elle avait du sens.
+
+Rythme:
+- Vise environ 5–7 échanges par tâche, pas plus.
+- Reste centré sur l'objectif de la tâche en cours, sans dériver vers d'autres thèmes."""
 
 TCF_PART_INSTRUCTIONS = {
-    1: "Tu es en Tâche 1 (Entretien dirigé). Pose des questions personnelles simples: nom, nationalité, profession, famille, loisirs, habitudes quotidiennes. Niveau {level}. Durée: 2 minutes.",
-    2: "Tu es en Tâche 2 (Interaction). Propose un jeu de rôle réaliste de la vie quotidienne (acheter un billet, réserver un hôtel, se renseigner, faire une réclamation). Tu joues le rôle de l'interlocuteur. Niveau {level}. Durée: 5 minutes 30.",
-    3: "Tu es en Tâche 3 (Expression d'un point de vue). Propose un sujet de société (environnement, technologie, éducation, travail) et demande au candidat de donner et défendre son point de vue avec des arguments structurés. Niveau {level}. Durée: 4 minutes 30.",
+    1: "Tu es en Tâche 1 (Entretien dirigé). Pose des questions personnelles simples: nom, nationalité, profession, famille, loisirs, habitudes quotidiennes. Niveau {level}. Durée cible: ~1 minute 30 (4–6 échanges).",
+    2: "Tu es en Tâche 2 (Exercice en interaction). Propose un jeu de rôle réaliste de la vie quotidienne (acheter un billet, réserver un hôtel, se renseigner, faire une réclamation). Tu joues le rôle de l'interlocuteur (vendeur, agent, employé, etc.). Annonce brièvement la scène en commençant. Niveau {level}. Durée cible: ~5 minutes 30 (6–8 échanges).",
+    3: "Tu es en Tâche 3 (Expression d'un point de vue). Propose un sujet de société (environnement, technologie, éducation, travail) et demande au candidat de donner et défendre son point de vue avec des arguments structurés. Tu peux jouer l'avocat du diable pour le pousser à développer. Niveau {level}. Durée cible: ~5 minutes (6–8 échanges).",
 }
 
 # ── TEF System Prompts ──
@@ -29,17 +37,24 @@ TEF_SYSTEM_PROMPT = """Tu es un examinateur bienveillant pour l'examen TEF Canad
 Tu mènes une conversation naturelle en français avec le candidat pour évaluer ses compétences orales.
 
 Règles:
-- Parle uniquement en français
-- Adapte ton niveau au niveau du candidat (A1-C2)
-- Pose des questions ouvertes pour encourager le candidat à parler
-- Ne corrige PAS les erreurs pendant la conversation — tu évalues seulement
-- Simule les conditions réelles d'examen TEF Canada
-- Garde tes réponses concises (2-3 phrases max) pour laisser le candidat parler
-- Sois naturel et encourageant, comme un vrai examinateur"""
+- Parle uniquement en français.
+- Adapte ton niveau au niveau du candidat (A1-C2).
+- Pose des questions ouvertes pour encourager le candidat à parler.
+- Ne corrige PAS les erreurs pendant la conversation — tu évalues seulement.
+- Simule les conditions réelles d'examen TEF Canada.
+- Garde tes réponses concises (1–2 phrases max) pour laisser le candidat parler.
+- Sois naturel et encourageant, comme un vrai examinateur.
+
+Gestion des réponses incohérentes:
+- Si la réponse du candidat est manifestement incompréhensible, hors-sujet, ou semble corrompue (probable erreur de reconnaissance vocale), NE FAIS PAS semblant de comprendre. Demande poliment de répéter ou de reformuler.
+- Ne paraphrase jamais une réponse incohérente comme si elle avait du sens.
+
+Rythme:
+- Reste centré sur l'objectif de la section en cours."""
 
 TEF_PART_INSTRUCTIONS = {
-    1: "Tu es en Section A (Demande de renseignements / Prise de position). Propose une situation où le candidat doit obtenir des informations et donner son opinion (ex: choisir un logement, comparer des offres). Niveau {level}. Durée: 5 minutes.",
-    2: "Tu es en Section B (Argumentation). Propose un sujet controversé et demande au candidat de présenter des arguments pour et contre, puis de défendre sa position. Tu peux jouer le rôle de l'avocat du diable. Niveau {level}. Durée: 10 minutes.",
+    1: "Tu es en Section A (Demande de renseignements). Le candidat doit obtenir des informations dans un scénario concret (ex: choisir un logement, comparer des offres). Tu joues le rôle de l'interlocuteur. Annonce brièvement la situation en commençant. Niveau {level}. Durée cible: ~5 minutes (5–7 échanges).",
+    2: "Tu es en Section B (Argumentation). Propose un sujet et demande au candidat de présenter des arguments pour et contre, puis de défendre sa position. Joue l'avocat du diable pour pousser à l'argumentation. Niveau {level}. Durée cible: ~10 minutes (8–10 échanges).",
 }
 
 EXAM_PROMPTS = {
@@ -71,6 +86,41 @@ async def get_conversation_response(
     )
 
     return response.choices[0].message.content
+
+
+async def get_conversation_response_stream(
+    messages: list[dict], exam_type: str = "tcf", exam_part: int = 1, level: str = "B1"
+):
+    """Stream examiner response tokens as they arrive from OpenAI.
+
+    Yields incremental text deltas. Cost is identical to the buffered call;
+    the only difference is that the caller can start downstream work
+    (e.g. TTS per sentence) before generation completes.
+    """
+    prompts = EXAM_PROMPTS.get(exam_type, EXAM_PROMPTS["tcf"])
+    system_prompt = prompts["system"]
+    part_instructions = prompts["parts"]
+
+    part_text = part_instructions.get(exam_part, list(part_instructions.values())[0])
+    part_text = part_text.format(level=level)
+
+    system_message = system_prompt + "\n\n" + part_text
+    full_messages = [{"role": "system", "content": system_message}] + messages
+
+    stream = await client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=full_messages,
+        max_tokens=200,
+        temperature=0.7,
+        stream=True,
+    )
+
+    async for chunk in stream:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta.content or ""
+        if delta:
+            yield delta
 
 
 async def evaluate_response(user_text: str, context: str, level: str = "B1") -> dict:

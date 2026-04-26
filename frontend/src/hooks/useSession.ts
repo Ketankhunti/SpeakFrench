@@ -27,6 +27,8 @@ export interface SessionMessage {
   ai_review?: string;
   transcript?: { role: string; content: string }[];
   exam_part?: number;
+  final?: boolean;
+  is_transition?: boolean;
 }
 
 interface UseSessionOptions {
